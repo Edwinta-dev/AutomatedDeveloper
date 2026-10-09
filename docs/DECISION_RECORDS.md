@@ -110,3 +110,7 @@ What depends on this change, and what to check if it's reverted.
 ## How it's evaluated
 
 See [EVALUATION.md](EVALUATION.md#study-4-documentation-for-a-human-in-the-loop). The main measures are whether the rationale's claims hold up against the code, and whether a person working from the records alone can answer design questions and steer changes correctly.
+
+## Without the adversary
+
+The adversary is optional, and off by default for software projects. Without it, records are still required and still cross-checked against the diff deterministically: missing sections block the commit, and mismatches appear as warnings in the Verified facts block. What's lost is a check that the rationale is *true* (for example, that an edge case it says is handled really is), not just consistent by name. Turn it on for claim-heavy or risky work, and for ML.

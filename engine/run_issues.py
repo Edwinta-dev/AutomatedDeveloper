@@ -1809,6 +1809,11 @@ def finalize(state: RunState, repo: Path, tools: Tools, exclude: set[int],
                             for k, v in sorted(state.env_blockers.items())) or "- None")
                + f"\n\n## Final worktree\n```\n{final_dirty or 'clean'}\n```\n")
     (Path(state.run_dir) / SUMMARY_FILE_NAME).write_text(summary, encoding="utf-8")
+    try:                                    # one-page digest; never fails the run
+        import digest
+        print(f"Run digest: {digest.write_digest(state.run_dir)}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"WARNING: run digest not written: {exc}")
 
     push_status = "not pushed (push disabled)"
     if args.push:

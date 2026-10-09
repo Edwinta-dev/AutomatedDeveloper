@@ -46,9 +46,11 @@ Three roles keep the agent honest. Only deterministic code can approve a change.
 |---|---|---|
 | **Improver** | The coding agent (Codex, Claude Code, ...) | Proposes a change for one issue |
 | **Gate** | Your validation commands: tests, lint, and for ML projects `ml_gate.py` | **Can approve** a commit |
-| **Adversary** | `adversary.py`, a cheap second model (Gemini) that reads the diff | **Can only veto.** A pass is not an approval |
+| **Adversary** *(optional)* | `adversary.py`, a cheap second model (Gemini) that reads the diff | **Can only veto.** A pass is not an approval. Off by default for software projects, on for ML |
 
-A mistaken or prompt-injected reviewer can therefore cause at most a false alarm, never a bad commit. When an attempt is rejected, the reasons go into the agent's next prompt so it can fix them.
+A mistaken or prompt-injected reviewer can therefore cause at most a false alarm, never a bad commit.
+
+The adversary is optional. Every check that can block a commit is deterministic, so the system is complete without it. Without it you lose one check: whether the claims in a decision record are actually *true*. The record check still confirms they *match the diff by name*. That matters most for ML work, where results can look better than they are, so ML projects have it on by default. For routine software work it's mostly extra token spend, so it starts off. Turn it on per project with `"adversary": {"enabled": true}` and a `GEMINI_API_KEY`. When an attempt is rejected, the reasons go into the agent's next prompt so it can fix them.
 
 Issues are worked in a fixed, predictable order: lowest issue number first, filtered by your label, milestone and range settings, skipping any issue whose dependencies are still open.
 
@@ -60,7 +62,7 @@ Issues are worked in a fixed, predictable order: lowest issue number first, filt
 | `git` | |
 | GitHub CLI `gh` | Logged in: `gh auth login` |
 | A coding agent CLI | `codex` (default), `claude`, or `aider`, installed and logged in |
-| `GEMINI_API_KEY` | *Optional.* Enables the adversarial reviewer. Without it, reviews are skipped and logged as `UNREVIEWED` |
+| `GEMINI_API_KEY` | *Optional.* Only needed when the adversarial reviewer is enabled (the default for ML projects). Without it, reviews are skipped and logged as `UNREVIEWED` |
 
 Works on Windows, macOS and Linux.
 
@@ -234,7 +236,7 @@ This direction comes from a study of 232 past runner commits ([results](docs/EVA
 | **Decision records:** the agent writes `docs/decisions/NNNN-slug.md` per issue (approach, alternatives, trade-offs, assumptions, edge cases, rollback). [Format](docs/DECISION_RECORDS.md) | Agent part done |
 | **Verified facts in each record:** components changed with their tags, tests run, gate verdicts, added by the tool | Done |
 | **Consistency check:** flags a rationale that doesn't match the diff (deterministic check plus the adversary) | Done |
-| **Run digest:** one page on return, covering what was done and which decisions need a human look | Next |
+| **Run digest:** one page on return, covering what was done and which decisions need a human look (`v2.py digest`) | Done |
 | **Component history:** every decision grouped by component or tag, read as a design history | Planned |
 | **Pilot and evaluate** on a real project: can a person answer design questions and steer changes from the records alone? ([Study 4](docs/EVALUATION.md#study-4-documentation-for-a-human-in-the-loop)) | Planned |
 | **Beyond source code:** the same record, isolate and verify loop for spreadsheets, documents and slides, through format adapters | Later |

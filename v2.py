@@ -484,6 +484,19 @@ def cmd_status(args) -> int:
     return 0
 
 
+def cmd_digest(args) -> int:
+    cpath = config_path(args.name)
+    cfg = v1.load_config_file(cpath)
+    repo = resolve_beside(cpath.parent, str(cfg.get("repo") or "."))
+    run_dir = latest_run_dir(repo) if repo.exists() else None
+    if run_dir is None:
+        print(f"no runs found for {repo}")
+        return 1
+    import digest
+    print(f"Digest: {digest.write_digest(str(run_dir))}")
+    return 0
+
+
 def cmd_list(_args) -> int:
     names = v1.list_projects(HERE)
     if not names:
@@ -583,6 +596,8 @@ def main() -> int:
 
     p = sub.add_parser("status", help="commits, deferrals, reviews, ML best")
     p.add_argument("name")
+    p = sub.add_parser("digest", help="write DIGEST.md for the project's latest run")
+    p.add_argument("name")
     sub.add_parser("list", help="projects beside this script")
     sub.add_parser("usage", help="Codex plan-limit %% and Claude Code token usage, from local logs")
     sub.add_parser("self-test", help="offline checks")
@@ -602,6 +617,8 @@ def main() -> int:
         return cmd_run(args, extra)
     if args.cmd == "status":
         return cmd_status(args)
+    if args.cmd == "digest":
+        return cmd_digest(args)
     if args.cmd == "list":
         return cmd_list(args)
     if args.cmd == "usage":

@@ -13,6 +13,7 @@ The [README](../README.md) covers everyday use. This page is the detail behind i
 - [Dangling reference check](#dangling-reference-check)
 - [Decision record check](#decision-record-check)
 - [Environment blockers](#environment-blockers)
+- [Run digest](#run-digest)
 - [Overnight sessions and usage limits](#overnight-sessions-and-usage-limits)
 - [Creating issues](#creating-issues)
 - [Using the scripts directly](#using-the-scripts-directly)
@@ -249,6 +250,18 @@ Add project-specific rules in the config:
 ```
 
 `probe_argv` exiting 0 means the dependency is present. Kinds an agent may declare: `MISSING_TOOL`, `MISSING_SDK`, `PERMISSION`, `CREDENTIALS`, `EXTERNAL_SERVICE`, `PLATFORM`, `HARDWARE`, `UNKNOWN`.
+
+## Run digest
+
+At the end of every run the runner writes `DIGEST.md` into the run dir and prints its path: one page for a person coming back to an unattended run. It lists, in order: the outcome; **what needs your attention** (environment blockers, set-aside issues with the reason and what to do, issues waiting on dependencies, and committed issues whose decision record or integrity checks flag something: partial/blocked status, consistency warnings, unexplained out-of-scope changes, unverified changes, removed symbols, reviewer vetoes, "Not handled" edge cases and assumptions); **what was built** (one row per committed issue with the record's "In short", trade-off, record path and commit); decisions grouped by component tag (or top-level folder); how to respond; tokens and data gaps. Runs that predate decision or integrity records still get a digest, with the gaps stated.
+
+```
+python v2.py digest <Project>                       # latest run of that project's repo
+python engine/digest.py --run <run-id|run-dir> [--print]
+python engine/digest.py --latest [--project-repo SUBSTR]
+```
+
+A digest failure is reported as a warning and never fails the run.
 
 ## Overnight sessions and usage limits
 
