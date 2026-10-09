@@ -3,6 +3,8 @@
 # Issue 1 builds the frozen protocol. It runs unattended like the rest (the gate allows
 # creating protected files, and locks the test data on the first pass), but review its
 # commit before merging: everything after it is judged by that eval.
+# scope: path, glob, or path::Qualname; the issue may only change these; imports, tests and
+# new helpers in scoped files are allowed. Checked by the scope gate (config "scope" section).
 
 labels:
   - {name: "experiment", color: "5319E7", description: "One experiment; gated by ml_gate.py"}
@@ -23,6 +25,7 @@ issues:
   - title: "Frozen split, eval script and baseline"
     milestone: "E0 Protocol"
     labels: ["setup"]
+    scope: ["configs/split.json", "src/evaluate.py", "src/metrics.py", "src/train_baseline.py", ".gitignore"]
     body: |
       - `configs/split.json` + `data/splits/` + `data/test/`: stratified (grouped if rows share an entity) train/val/test split with a fixed seed.
       - `src/evaluate.py --predictions <csv> --json`: prints `{"value": x}` for the project metric on the validation split.
@@ -33,6 +36,7 @@ issues:
     milestone: "E1 Experiments"
     labels: ["experiment"]
     depends_on: ["#1"]
+    scope: ["src/train_lgbm.py"]
     body: |
       Train LightGBM with library defaults (fixed seed) on the frozen split.
       Acceptance: beats the ledger best; results written per the project instructions.
@@ -41,6 +45,7 @@ issues:
     milestone: "E1 Experiments"
     labels: ["experiment"]
     depends_on: ["#2"]
+    scope: ["src/features/**", "src/train_lgbm.py::build_features"]
     body: |
       Add out-of-fold target encoding for categoricals with more than 50 levels, fit inside each training fold only.
       Acceptance: beats the ledger best; no encoding statistic computed on validation rows.

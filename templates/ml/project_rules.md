@@ -6,6 +6,7 @@ This is an ML experiment repo. Each issue is **one experiment**. It is committed
 - **Never let validation or test rows reach training.** Fit every transform (scalers, imputers, target or mean encoding, feature selection, vocabularies) on the training fold only. Split grouped or time-ordered data by group or by time.
 - **Never tune against the validation score in a loop,** and never report the best of many seeds. Take settings from the issue or from training-fold CV.
 - Set every random seed. Keep the change scoped to this experiment.
+- Stay inside the issue's **Scope:** line; explain any unavoidable change outside it under SCOPE_NOTES.
 
 ## Every experiment writes its result
 

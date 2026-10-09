@@ -9,6 +9,7 @@ The [README](../README.md) covers everyday use. This page is the detail behind i
 - [Validation (the commit gate)](#validation-the-commit-gate)
 - [The adversarial reviewer](#the-adversarial-reviewer)
 - [The ML gate](#the-ml-gate)
+- [Scope gate](#scope-gate)
 - [Environment blockers](#environment-blockers)
 - [Overnight sessions and usage limits](#overnight-sessions-and-usage-limits)
 - [Creating issues](#creating-issues)
@@ -22,7 +23,7 @@ A project is a top-level folder (beside `v2.py`) holding an `issue-automation.co
 
 | File | Edit it? | Purpose |
 |---|---|---|
-| `issue-automation.config.json` | **Yes**, this is the main config | Repo path, branching, run limits, plus the `ml` and `adversary` sections |
+| `issue-automation.config.json` | **Yes**, this is the main config | Repo path, branching, run limits, plus the `ml`, `adversary` and `scope` sections |
 | `issues.yaml` | **Yes** | The backlog (`.yaml`, `.json` or `.md`) |
 | `project_rules.md` | **Yes** | Rules injected near the top of every issue prompt |
 | `validate.json` | Rarely | The commit gate. `new --test` fills in the test command |
@@ -58,6 +59,7 @@ Relative paths in the config resolve next to the config file. Any command-line f
 | `blockers` | `[]` | Project-specific blocker rules. See [Environment blockers](#environment-blockers) |
 | `adversary` | | See [The adversarial reviewer](#the-adversarial-reviewer) |
 | `ml` | | ML projects only. See [The ML gate](#the-ml-gate) |
+| `scope` | `mode: report` | Scope-gate settings. See [Scope gate](#scope-gate) |
 
 ### Agent sidecar (`agent.json`)
 
@@ -102,7 +104,7 @@ The order is deterministic:
 
 After the agent reports success, the supervisor runs `validate.json` itself, with the target repo as the working directory. Nothing is committed unless every command exits 0.
 
-**Order:** `always` commands first, then `rules` whose `when_touched` globs match a changed file, then commands marked `"skip_if_failed": true` (typically the adversary), and those only if everything before them passed. So no paid review runs on code that already failed its tests.
+**Order:** `always` commands first, then `rules` whose `when_touched` globs match a changed file, then commands marked `"skip_if_failed": true` (in the templates: the scope check, then the adversary), in listed order, and those only if everything before them passed. So no paid review runs on code that already failed its tests.
 
 **`suspicious`:** changed files matching `deny_globs` (and not `allow_globs`), or larger than `max_file_mb`, block the commit.
 
@@ -157,6 +159,33 @@ Exit codes: `0` pass, `1` fail, `2` misconfigured.
 python engine/ml_gate.py --config <cfg> --repo <repo> --lock     # (re)hash protected data
 python engine/ml_gate.py --config <cfg> --repo <repo> --status   # show the best result on record
 ```
+
+## Scope gate
+
+Each issue may declare which code components it is allowed to change. The scope gate (`integrity/integrity.py gate`) is a deterministic check that the attempt's diff stayed inside that list. No model is involved.
+
+**Declaring scope.** Give an issue a `scope:` list in `issues.yaml` (or JSON). Each entry is one of:
+
+| Entry | Means |
+|---|---|
+| `src/hsv.py` | That file |
+| `src/vision/**` | A glob of files |
+| `src/hsv.py::analyse_frame`, `src/hsv.py::HSV.threshold` | One function, class or method (`path::Qualname`) |
+
+`create_issues.py` renders it as one line after `**Depends on:**`, e.g. ``**Scope:** `src/hsv.py::analyse_frame`, `tests/test_hsv.py` ``. An issue without `scope:` gets no line. Backslashes are normalised to `/` with a warning. `--update` adds, rewrites or removes the line on existing issues to match the file.
+
+**Modes** (config `scope.mode`):
+
+- **`report`** (default): records out-of-scope changes and never blocks.
+- **`enforce`**: an out-of-scope change fails the gate, so nothing is committed.
+
+**Allowances:** files matching `allow_globs` (tests by default), import changes (`allow_imports`), new files (`allow_new_files`) and new functions or classes in scoped files (`allow_new_components`) are never out of scope.
+
+**SCOPE_NOTES.** When a change outside the scope is unavoidable, the agent adds a `SCOPE_NOTES:` section to its result block, one `- path::component: why` line per change. Notes are recorded beside the finding. They never authorise anything: in `enforce` mode an out-of-scope change still fails.
+
+**Records** go to `<run dir>/integrity/`.
+
+The gate is deliberately independent of the runner: it lives in `integrity/` at the repo root and talks to the runner only through its CLI, the `AGENT_*` environment variables and files. It runs from `validate.json` as a `skip_if_failed` command before the adversary. See `integrity/README.md` for details.
 
 ## Environment blockers
 
@@ -215,13 +244,14 @@ Add project-specific rules in the config:
 - **Deterministic:** issues are created in file order, so GitHub numbers ascend in the same order the runner works them.
 - **Idempotent:** an issue whose exact title already exists is skipped, so a half-finished run can be re-run safely.
 - **Positional dependencies:** `depends_on: ["#2"]` means the second issue *in the file* (an exact title also works). It is rewritten to the real GitHub number in the `**Depends on:**` line the runner reads.
+- **Scope:** `scope: ["src/hsv.py::analyse_frame", "tests/**"]` (path, glob or `path::Qualname`) becomes the `**Scope:**` line the [scope gate](#scope-gate) checks.
 - **Labels and milestones** may be declared at the top of the file. Any others the issues use are created too. Closed milestones count as existing.
 - **Polite:** writes are paced (`--delay`, default 1s) and rate-limit rejections are retried (`--retries`, default 5).
 - It never commits, pushes, branches or opens PRs.
 
 ```bash
 python v2.py issues MyApp --dry-run    # existing titles show as SKIP
-python v2.py issues MyApp --update     # repair labels, milestones and dependency lines on existing issues
+python v2.py issues MyApp --update     # repair labels, milestones, dependency and scope lines on existing issues
 ```
 
 ## Using the scripts directly

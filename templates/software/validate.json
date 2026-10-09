@@ -1,5 +1,5 @@
 {
-  "//": "Independent commit gate. The supervisor runs this itself after the agent claims success; nothing is committed unless every command exits 0. Tokens: __PY__ = the supervisor's Python, __CHANGED_DIRS__ = one run per changed directory. Replace the TODO command with the project's test suite. The adversary runs last, only if everything before it passed, and can only veto (exit 3); settings in the config's adversary section.",
+  "//": "Independent commit gate. The supervisor runs this itself after the agent claims success; nothing is committed unless every command exits 0. Tokens: __PY__ = the supervisor's Python, __CHANGED_DIRS__ = one run per changed directory. Replace the TODO command with the project's test suite. The scope check (integrity/integrity.py gate; settings in the config's scope section) and then the adversary run last, in that order, only if everything before them passed; the adversary can only veto (exit 3), settings in the config's adversary section.",
   "suspicious": {
     "//": "Changed files matching deny_globs (and not allow_globs), or over max_file_mb, block the commit.",
     "max_file_mb": 5,
@@ -46,6 +46,20 @@
       "argv": [
         "TODO-test-command",
         "arg"
+      ]
+    },
+    {
+      "label": "scope check",
+      "skip_if_failed": true,
+      "timeout_minutes": 5,
+      "argv": [
+        "__PY__",
+        "__HARNESS__/../integrity/integrity.py",
+        "gate",
+        "--config",
+        "__PROJECT_CONFIG__",
+        "--repo",
+        "."
       ]
     },
     {

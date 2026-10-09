@@ -62,5 +62,14 @@
     "preset": "ml",
     "model": "gemini-2.5-pro",
     "priors": {}
+  },
+
+  "scope": {
+    "//": "Deterministic scope gate (integrity/integrity.py gate) checks each commit's diff against the issue's **Scope:** line; report = record only, enforce = block out-of-scope changes.",
+    "mode": "report",
+    "allow_globs": ["tests/**", "**/test_*.py", "**/*_test.py", "**/conftest.py"],
+    "allow_imports": true,
+    "allow_new_files": true,
+    "allow_new_components": true
   }
 }
