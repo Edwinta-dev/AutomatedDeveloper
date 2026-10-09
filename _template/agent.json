@@ -1,0 +1,33 @@
+{
+  "//": "Agent sidecar. Start from a builtin (set \"agent\": \"codex\" | \"claude\" | \"aider\" in the config) or tune one here. {EXE}, {MODEL} and {LAST_MSG} are filled in by the supervisor.",
+  "name": "codex",
+  "exe_candidates": [
+    "codex.cmd",
+    "codex.exe",
+    "codex"
+  ],
+  "model": "",
+  "argv": [
+    "{EXE}",
+    "--model",
+    "{MODEL}",
+    "--ask-for-approval",
+    "never",
+    "exec",
+    "--sandbox",
+    "workspace-write",
+    "--json",
+    "--output-last-message",
+    "{LAST_MSG}",
+    "-"
+  ],
+  "prompt_mode": "stdin",
+  "result_begin": "===AGENT_ISSUE_RESULT_BEGIN===",
+  "result_end": "===AGENT_ISSUE_RESULT_END===",
+  "//prompt_prefix": "Project rules live in project_rules.md beside this file and are injected near the top of every issue prompt.",
+  "prompt_prefix": {
+    "file": "project_rules.md"
+  },
+  "//prompt_suffix": "Injected just before the result block. Good for verification reminders.",
+  "prompt_suffix": "Before declaring COMPLETE: run the issue's acceptance check and the full test suite; both must pass. Write tests in the same change as the code. Do not weaken or skip tests."
+}

@@ -1,0 +1,38 @@
+{
+  "//": "The ONE file to configure. Made by `python v2.py new <Name> --repo <path> --test \"<cmd>\"` (or copy this folder by hand). Then write issues.yaml, `v2.py check`, `v2.py issues`, `v2.py run`. Relative paths resolve next to this file; CLI flags override any value here.",
+  "repo": "TODO: absolute path to the project's git checkout",
+  "issues": "issues.yaml",
+  "//agent": "A builtin name (codex, claude, aider) or a sidecar agent file like agent.json. model blank = the agent's own default.",
+  "agent": "agent.json",
+  "model": "",
+  "validate": "validate.json",
+  "contract_file": "",
+  "//branching": "Solo defaults: work on the checked-out non-base branch, else on work_branch. Base merges in automatically (aborts on conflict). Issues close when the PR merges.",
+  "base_branch": "main",
+  "work_branch": "automation/work",
+  "branch_mode": "auto",
+  "close_on": "merge",
+  "sync_base": "merge",
+  "run": {
+    "//": "Issue filters for this run. Push/PR stay manual: review the branch, push it, open one PR.",
+    "min_issue": 1,
+    "max_issue": 0,
+    "exclude": "",
+    "labels": "",
+    "labels_all": false,
+    "milestone": "",
+    "max_hours": 4,
+    "stall_minutes": 20,
+    "max_session_minutes": 45,
+    "max_no_progress_retries": 3,
+    "push": false,
+    "open_pr": false
+  },
+  "adversary": {
+    "//": "Veto-only reviewer (adversary.py), the last gate in validate.json. Needs GEMINI_API_KEY; without it every review is logged UNREVIEWED and nothing is blocked. Set enabled false to turn it off.",
+    "enabled": true,
+    "preset": "software",
+    "model": "gemini-2.5-pro",
+    "priors": {}
+  }
+}

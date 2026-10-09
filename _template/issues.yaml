@@ -1,0 +1,37 @@
+# Issue backlog. Vet it, then: python v2.py check <Name>  ->  python v2.py issues <Name>
+# depends_on "#N" = the N-th issue IN THIS FILE (rewritten to real GitHub numbers on creation).
+# Each issue should name its files, its requirements, and a command-line acceptance check.
+
+labels:
+  - {name: "size:S", color: "C5DEF5"}
+  - {name: "size:M", color: "C5DEF5"}
+
+milestones:
+  - {title: "M1", description: "First milestone"}
+
+defaults:
+  contract: |
+    ## Read AGENTS.md first
+    It overrides anything here. Every issue ends with its acceptance check passing.
+
+issues:
+  - title: "TODO: first issue"
+    milestone: "M1"
+    labels: ["size:S"]
+    body: |
+      ## Context
+      Why this issue exists.
+
+      ## Requirements
+      - [ ] ...
+
+      ## Acceptance
+      `python -m pytest -q tests/test_first.py` passes.
+
+  - title: "TODO: second issue, which needs the first"
+    milestone: "M1"
+    labels: ["size:M"]
+    depends_on: ["#1"]
+    body: |
+      ## Requirements
+      - [ ] ...

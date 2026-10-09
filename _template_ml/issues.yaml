@@ -1,0 +1,46 @@
+# Experiment backlog. Vet it, then: python v2.py check <Name>  ->  python v2.py issues <Name>
+# depends_on "#N" = the N-th issue IN THIS FILE (rewritten to real GitHub numbers on creation).
+# Issue 1 builds the frozen protocol. It runs unattended like the rest (the gate allows
+# creating protected files, and locks the test data on the first pass), but review its
+# commit before merging: everything after it is judged by that eval.
+
+labels:
+  - {name: "experiment", color: "5319E7", description: "One experiment; gated by ml_gate.py"}
+  - {name: "setup", color: "0E8A16", description: "Builds the frozen protocol"}
+
+milestones:
+  - {title: "E0 Protocol", description: "Frozen split, eval, baseline."}
+  - {title: "E1 Experiments", description: "Unattended experiment loop."}
+
+defaults:
+  contract: |
+    ## Rules
+    The eval protocol is frozen (see the project instructions). Write results/latest.json and
+    results/val_predictions.csv from this run. Beat experiments/ledger.json's best, or report
+    INCOMPLETE with the number; never tune against validation until it passes.
+
+issues:
+  - title: "Frozen split, eval script and baseline"
+    milestone: "E0 Protocol"
+    labels: ["setup"]
+    body: |
+      - `configs/split.json` + `data/splits/` + `data/test/`: stratified (grouped if rows share an entity) train/val/test split with a fixed seed.
+      - `src/evaluate.py --predictions <csv> --json`: prints `{"value": x}` for the project metric on the validation split.
+      - `src/train_baseline.py`: a simple baseline (logistic regression or a small GBM) that writes `results/latest.json` and `results/val_predictions.csv`.
+      - `.gitignore`: `data/`, `results/`, `models/`.
+
+  - title: "LightGBM with default params"
+    milestone: "E1 Experiments"
+    labels: ["experiment"]
+    depends_on: ["#1"]
+    body: |
+      Train LightGBM with library defaults (fixed seed) on the frozen split.
+      Acceptance: beats the ledger best; results written per the project instructions.
+
+  - title: "Target encoding for high-cardinality categoricals (fold-safe)"
+    milestone: "E1 Experiments"
+    labels: ["experiment"]
+    depends_on: ["#2"]
+    body: |
+      Add out-of-fold target encoding for categoricals with more than 50 levels, fit inside each training fold only.
+      Acceptance: beats the ledger best; no encoding statistic computed on validation rows.

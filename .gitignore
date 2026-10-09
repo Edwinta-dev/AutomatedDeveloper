@@ -1,0 +1,30 @@
+# --- Project instances stay local ------------------------------------------
+# Every top-level folder is treated as a project by the scripts, and projects
+# hold machine-specific paths and private backlogs. Only the templates and docs
+# are part of the tool. To version a project, add a `!/<Name>/` line below.
+/*/
+!/_template/
+!/_template_ml/
+!/docs/
+
+# --- Machine-specific files ------------------------------------------------
+python-path-backup-*.json
+ML_SETUP.ps1
+*.bak
+
+# --- Python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# --- Editors / OS ----------------------------------------------------------
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# --- Secrets ---------------------------------------------------------------
+.env
+.env.*
+!.env.example

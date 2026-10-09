@@ -1,0 +1,105 @@
+{
+  "//": "Three-role commit gate for ML experiments. Deterministic checks run first and are the only thing that can APPROVE; the adversary runs last, only if they all passed (skip_if_failed), and can only VETO (exit 3). Tokens: __PY__ = the supervisor's Python, __HARNESS__ = the folder holding run_issues.py / ml_gate.py / adversary.py, __PROJECT_CONFIG__ = the project's issue-automation.config.json (its ml/adversary sections). Commands run with the repo as cwd.",
+  "suspicious": {
+    "//": "Model weights, datasets and run artifacts never get committed (gitignore data/, results/, models/); the ledger does. Top-level data/ only, so a src/data/ package is fine; max_file_mb catches stray big files.",
+    "max_file_mb": 5,
+    "deny_globs": [
+      "**/.env",
+      "**/.env.*",
+      "**/*.pem",
+      "**/*.key",
+      "**/credentials",
+      "**/secrets*.json",
+      "**/kaggle.json",
+      "**/.venv/**",
+      "**/venv/**",
+      "**/__pycache__/**",
+      "**/.ipynb_checkpoints/**",
+      "data/**",
+      "**/*.parquet",
+      "**/*.feather",
+      "**/*.npy",
+      "**/*.npz",
+      "**/*.pt",
+      "**/*.pth",
+      "**/*.ckpt",
+      "**/*.safetensors",
+      "**/*.onnx",
+      "**/*.joblib",
+      "**/*.pkl",
+      "**/*.h5",
+      "**/mlruns/**",
+      "**/wandb/**",
+      "**/*.log"
+    ],
+    "allow_globs": [
+      "**/.env.example"
+    ]
+  },
+  "always": [
+    {
+      "label": "whitespace/conflict-marker check",
+      "argv": [
+        "git",
+        "diff",
+        "--check"
+      ]
+    },
+    {
+      "label": "ML gate (deterministic: protected eval/data, results contract, plausibility, improvement)",
+      "argv": [
+        "__PY__",
+        "__HARNESS__/ml_gate.py",
+        "--config",
+        "__PROJECT_CONFIG__"
+      ],
+      "timeout_minutes": 60
+    },
+    {
+      "label": "adversarial review (veto-only)",
+      "skip_if_failed": true,
+      "timeout_minutes": 5,
+      "argv": [
+        "__PY__",
+        "__HARNESS__/adversary.py",
+        "--config",
+        "__PROJECT_CONFIG__",
+        "--repo",
+        ".",
+        "--diff",
+        "--results",
+        "results/latest.json",
+        "--results",
+        "experiments/ledger.json"
+      ]
+    }
+  ],
+  "rules": [
+    {
+      "when_touched": [
+        "**/*.py"
+      ],
+      "commands": [
+        {
+          "label": "python compileall (changed dirs)",
+          "argv": [
+            "__PY__",
+            "-m",
+            "compileall",
+            "-q",
+            "__CHANGED_DIRS__"
+          ]
+        },
+        {
+          "label": "unit tests (pytest; passes when the repo has none yet)",
+          "argv": [
+            "__PY__",
+            "-c",
+            "import importlib.util,subprocess,sys\nif importlib.util.find_spec('pytest') is None: sys.exit(0)\nr=subprocess.call([sys.executable,'-m','pytest','-q'])\nsys.exit(0 if r==5 else r)"
+          ],
+          "timeout_minutes": 20
+        }
+      ]
+    }
+  ]
+}

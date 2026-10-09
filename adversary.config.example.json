@@ -1,0 +1,24 @@
+{
+  "//": "Veto-only adversary config for CONVENTIONAL SOFTWARE work. Wire it into a project's --validate file as a command; a VETO (exit 3) blocks the commit. What to look for lives here, so the same adversary.py serves software and ML — only this file changes.",
+
+  "provider": "gemini",
+  "model": "gemini-2.5-pro",
+  "api_key_env": "GEMINI_API_KEY",
+  "timeout_seconds": 90,
+  "max_diff_bytes": 200000,
+  "role": "software",
+
+  "checks": [
+    "Does the diff actually implement the issue, or fake it? Watch for hardcoded return values, stubbed functions, TODOs left in place, and tests that were deleted, skipped, or weakened to go green.",
+    "Correctness: off-by-one, unhandled None/empty/error paths, wrong boundary conditions, resource leaks, obvious concurrency races.",
+    "Security: SQL/command injection, secrets or keys committed, unsafe deserialization, auth/permission checks removed, user input reaching a shell or query unescaped.",
+    "Spec/constraint violations stated in the repo's AGENTS.md or issue (e.g. banned dependencies, forbidden patterns, schema/name rules).",
+    "Scope: did it change unrelated files or sneak in a broad refactor the issue did not ask for?"
+  ],
+
+  "priors": {},
+
+  "veto_policy": "Veto ONLY when you can point at concrete evidence in the diff. If it is merely style, preference, or you are unsure, return NO_OBJECTION. You cannot approve — a NO_OBJECTION only means you found nothing worth blocking.",
+
+  "mock_response": null
+}

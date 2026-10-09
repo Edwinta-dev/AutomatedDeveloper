@@ -1,0 +1,30 @@
+{
+  "//": "Veto-only adversary config for an ML / Kaggle experiment loop. Same adversary.py, different checks + priors. For a new ML project start from _template_ml/ instead: there ml_gate.py enforces the hard bounds (plausibility, frozen eval, improvement) in code, and its adversary.config.json focuses on what code cannot see.",
+
+  "provider": "gemini",
+  "model": "gemini-2.5-pro",
+  "api_key_env": "GEMINI_API_KEY",
+  "timeout_seconds": 120,
+  "max_diff_bytes": 200000,
+  "role": "machine-learning",
+
+  "checks": [
+    "Leakage: is the test/holdout set read or fit on anywhere (data loader, feature engineering, target encoding computed on full data, scaler fit before split, temporal leakage)? Is the eval script, metric definition, or test-data manifest modified?",
+    "Reward hacking: did the change edit the metric, the eval harness, or the split to make the number move, rather than improving the model?",
+    "Plausibility: compare the claimed metric to the priors below. A result at or above the known best, or a large jump in one step, is a red flag for leakage or a bug — VETO and say why.",
+    "Reproducibility: are seeds set and is the reported metric from the frozen eval protocol (not a cherry-picked run)?",
+    "Overfitting to val: repeated tiny gains within noise across many experiments (p-hacking)."
+  ],
+
+  "priors": {
+    "dataset": "REPLACE with your Kaggle dataset slug",
+    "metric": "REPLACE e.g. roc_auc / f1 / rmse",
+    "public_leaderboard_best": "REPLACE with the known top score, e.g. 0.865",
+    "strong_baseline": "REPLACE with a solid baseline, e.g. 0.82",
+    "note": "Claimed val/test metric exceeding public_leaderboard_best is almost certainly leakage — veto."
+  },
+
+  "veto_policy": "Veto ONLY on concrete evidence: a leakage path you can name, an edited eval/metric, or a metric implausible against the priors. Otherwise NO_OBJECTION. You cannot approve; the deterministic metric gate does that.",
+
+  "mock_response": null
+}

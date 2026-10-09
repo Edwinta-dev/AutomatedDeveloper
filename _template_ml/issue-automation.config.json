@@ -1,0 +1,66 @@
+{
+  "//": "ML / Kaggle experiment project: the ONE file to configure. Made by `python v2.py new <Name> --ml --repo <path> --metric <m>`; then write issues.yaml, `v2.py check`, `v2.py issues`, `v2.py run`. Each issue is one experiment, committed only if the ML gate approves and the adversary does not veto.",
+
+  "repo": "TODO: absolute path to the experiment repo's git checkout",
+  "issues": "issues.yaml",
+
+  "agent": "agent.json",
+  "model": "",
+  "validate": "validate.json",
+  "contract_file": "",
+
+  "base_branch": "main",
+  "work_branch": "automation/experiments",
+  "branch_mode": "auto",
+  "close_on": "merge",
+  "sync_base": "merge",
+
+  "run": {
+    "//": "Training is slow and quiet: long sessions, a generous stall window, fewer retries.",
+    "min_issue": 1,
+    "max_issue": 0,
+    "exclude": "",
+    "labels": "",
+    "labels_all": false,
+    "milestone": "",
+    "max_hours": 8,
+    "stall_minutes": 45,
+    "max_session_minutes": 120,
+    "max_no_progress_retries": 2,
+    "push": false,
+    "open_pr": false
+  },
+
+  "ml": {
+    "//": "Deterministic ML gate (ml_gate.py): the only thing that can approve an experiment. Paths are relative to the repo. Test data is sha256-locked automatically on the first passing experiment.",
+    "metric": "TODO e.g. roc_auc",
+    "direction": "maximize",
+    "results_file": "results/latest.json",
+    "required_fields": ["seed", "split"],
+    "require_fresh": true,
+    "baseline": null,
+    "require_improvement": true,
+    "min_delta": 0.0005,
+    "//plausibility": "plausible_max ~ the public leaderboard best (above it = leakage). max_jump = the largest one-experiment gain you'd believe unreviewed.",
+    "plausible_min": null,
+    "plausible_max": null,
+    "max_jump": 0.02,
+    "protected_paths": ["src/evaluate.py", "src/metrics.py", "configs/split.json"],
+    "protected_data": ["data/test/**", "data/splits/**"],
+    "ledger_file": "experiments/ledger.json",
+    "//reproduce": "The gate re-runs the frozen eval on saved predictions and uses its own number. null = trust results_file.",
+    "reproduce": {
+      "argv": ["__PY__", "src/evaluate.py", "--predictions", "results/val_predictions.csv", "--json"],
+      "tolerance": 1e-6,
+      "timeout_minutes": 30
+    }
+  },
+
+  "adversary": {
+    "//": "Veto-only reviewer (adversary.py). Needs GEMINI_API_KEY; without it every review is logged UNREVIEWED and nothing is blocked. Priors are context only.",
+    "enabled": true,
+    "preset": "ml",
+    "model": "gemini-2.5-pro",
+    "priors": {}
+  }
+}

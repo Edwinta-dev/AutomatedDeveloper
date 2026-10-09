@@ -1,0 +1,31 @@
+{
+  "//": "Example v1 --validate file showing the THREE-ROLE gate for conventional software. Deterministic checks (which can APPROVE) run first; the Gemini adversary (which can only VETO, exit 3) runs last and only if they passed (skip_if_failed). Tokens: __PY__ = the supervisor's Python, __HARNESS__ = the folder holding run_issues.py/adversary.py, __CONFIG_DIR__ = the folder holding this file. Commands run with the repo as cwd. For ML projects start from _template_ml/ instead.",
+
+  "suspicious": {
+    "max_file_mb": 5,
+    "deny_globs": ["**/.env", "**/*.pem", "**/id_rsa", "**/secrets*.json"],
+    "allow_globs": ["**/.env.example"]
+  },
+
+  "always": [
+    { "label": "whitespace/conflict-marker check", "argv": ["git", "diff", "--check"] },
+
+    { "label": "unit tests", "argv": ["__PY__", "-m", "pytest", "-q"], "timeout_minutes": 20 },
+
+    { "//": "VETO-ONLY adversary. Sees the issue, the agent's result block, the diff and new files. Exit 3 = veto = commit blocked; its reasons are fed back to the agent's next attempt. Needs GEMINI_API_KEY; without it it prints UNREVIEWED, does not block, and logs to <run dir>/adversary_log.jsonl.",
+      "label": "adversarial review (veto-only)",
+      "skip_if_failed": true,
+      "timeout_minutes": 5,
+      "argv": ["__PY__", "__HARNESS__/adversary.py",
+               "--config", "__HARNESS__/adversary.config.example.json",
+               "--repo", ".", "--diff"] }
+  ],
+
+  "rules": [
+    { "when_touched": ["**/*.py"],
+      "commands": [
+        { "label": "python compileall (changed dirs)",
+          "argv": ["__PY__", "-m", "compileall", "-q", "__CHANGED_DIRS__"] }
+      ] }
+  ]
+}
