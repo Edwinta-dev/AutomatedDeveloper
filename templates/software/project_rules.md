@@ -7,5 +7,6 @@ TODO: the project's non-negotiable rules, one bullet each. For example: the stac
 ## Always
 
 - Implement exactly the one issue. No drive-by refactors.
+- Stay inside the issue's **Scope:** line; explain any unavoidable change outside it under SCOPE_NOTES.
 - Write or update tests in the same change as the code. Never weaken, skip or delete tests to go green.
 - Never commit secrets (`.env`, keys, local config) or dependency and build folders.

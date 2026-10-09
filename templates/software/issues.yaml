@@ -1,6 +1,8 @@
 # Issue backlog. Vet it, then: python v2.py check <Name>  ->  python v2.py issues <Name>
 # depends_on "#N" = the N-th issue IN THIS FILE (rewritten to real GitHub numbers on creation).
 # Each issue should name its files, its requirements, and a command-line acceptance check.
+# scope: path, glob, or path::Qualname; the issue may only change these; imports, tests and
+# new helpers in scoped files are allowed. Checked by the scope gate (config "scope" section).
 
 labels:
   - {name: "size:S", color: "C5DEF5"}
@@ -18,6 +20,7 @@ issues:
   - title: "TODO: first issue"
     milestone: "M1"
     labels: ["size:S"]
+    scope: ["src/first.py::first_function", "tests/test_first.py"]
     body: |
       ## Context
       Why this issue exists.
@@ -32,6 +35,7 @@ issues:
     milestone: "M1"
     labels: ["size:M"]
     depends_on: ["#1"]
+    scope: ["src/second/**", "src/first.py::FirstClass.method"]
     body: |
       ## Requirements
       - [ ] ...

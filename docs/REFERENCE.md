@@ -9,6 +9,8 @@ The [README](../README.md) covers everyday use. This page is the detail behind i
 - [Validation (the commit gate)](#validation-the-commit-gate)
 - [The adversarial reviewer](#the-adversarial-reviewer)
 - [The ML gate](#the-ml-gate)
+- [Scope gate](#scope-gate)
+- [Dangling reference check](#dangling-reference-check)
 - [Environment blockers](#environment-blockers)
 - [Overnight sessions and usage limits](#overnight-sessions-and-usage-limits)
 - [Creating issues](#creating-issues)
@@ -22,7 +24,7 @@ A project is a top-level folder (beside `v2.py`) holding an `issue-automation.co
 
 | File | Edit it? | Purpose |
 |---|---|---|
-| `issue-automation.config.json` | **Yes**, this is the main config | Repo path, branching, run limits, plus the `ml` and `adversary` sections |
+| `issue-automation.config.json` | **Yes**, this is the main config | Repo path, branching, run limits, plus the `ml`, `adversary` and `scope` sections |
 | `issues.yaml` | **Yes** | The backlog (`.yaml`, `.json` or `.md`) |
 | `project_rules.md` | **Yes** | Rules injected near the top of every issue prompt |
 | `validate.json` | Rarely | The commit gate. `new --test` fills in the test command |
@@ -58,6 +60,7 @@ Relative paths in the config resolve next to the config file. Any command-line f
 | `blockers` | `[]` | Project-specific blocker rules. See [Environment blockers](#environment-blockers) |
 | `adversary` | | See [The adversarial reviewer](#the-adversarial-reviewer) |
 | `ml` | | ML projects only. See [The ML gate](#the-ml-gate) |
+| `scope` | `mode: report` | Scope-gate settings. See [Scope gate](#scope-gate) |
 
 ### Agent sidecar (`agent.json`)
 
@@ -102,7 +105,7 @@ The order is deterministic:
 
 After the agent reports success, the supervisor runs `validate.json` itself, with the target repo as the working directory. Nothing is committed unless every command exits 0.
 
-**Order:** `always` commands first, then `rules` whose `when_touched` globs match a changed file, then commands marked `"skip_if_failed": true` (typically the adversary), and those only if everything before them passed. So no paid review runs on code that already failed its tests.
+**Order:** `always` commands first, then `rules` whose `when_touched` globs match a changed file, then commands marked `"skip_if_failed": true` (in the templates: the scope check, then the adversary), in listed order, and those only if everything before them passed. So no paid review runs on code that already failed its tests.
 
 **`suspicious`:** changed files matching `deny_globs` (and not `allow_globs`), or larger than `max_file_mb`, block the commit.
 
@@ -157,6 +160,57 @@ Exit codes: `0` pass, `1` fail, `2` misconfigured.
 python engine/ml_gate.py --config <cfg> --repo <repo> --lock     # (re)hash protected data
 python engine/ml_gate.py --config <cfg> --repo <repo> --status   # show the best result on record
 ```
+
+## Scope gate
+
+Each issue may declare which code components it is allowed to change. The scope gate (`integrity/integrity.py gate`) is a deterministic check that the attempt's diff stayed inside that list. No model is involved.
+
+**Declaring scope.** Give an issue a `scope:` list in `issues.yaml` (or JSON). Each entry is one of:
+
+| Entry | Means |
+|---|---|
+| `src/hsv.py` | That file |
+| `src/vision/**` | A glob of files |
+| `src/hsv.py::analyse_frame`, `src/hsv.py::HSV.threshold` | One function, class or method (`path::Qualname`) |
+
+`create_issues.py` renders it as one line after `**Depends on:**`, e.g. ``**Scope:** `src/hsv.py::analyse_frame`, `tests/test_hsv.py` ``. An issue without `scope:` gets no line. Backslashes are normalised to `/` with a warning. `--update` adds, rewrites or removes the line on existing issues to match the file.
+
+**Modes** (config `scope.mode`):
+
+- **`report`** (default): records out-of-scope changes and never blocks.
+- **`enforce`**: an out-of-scope change fails the gate (exit 1), so nothing is committed. So does an *unverified* file, one the adapter couldn't parse, because missing verification never counts as a pass.
+
+**Allowances:** never out of scope:
+
+- files matching `allow_globs`. By default that's tests in Python, JS, Dart, PHP and Go, plus docs (`**/*.md`, `docs/**`) and `.env.example`;
+- import changes (`allow_imports`), including `try:` / `if TYPE_CHECKING:` blocks that contain only imports;
+- new files (`allow_new_files`);
+- new functions, classes or constants in scoped files (`allow_new_components`).
+
+Module-level constants are components too, so a scope can name `path.py::TABLE_COLUMNS`.
+
+**Protected paths** (`protect_globs`): `CLAUDE.md`, `AGENTS.md`, `.claude/`, `.codex/`, `.mcp.json` and `*.bak` / `*.orig` files are always out of scope unless the scope names them explicitly. They override every allowance, because an agent editing its own instructions or committing tool settings is never a side effect of an issue.
+
+**Use report mode.** A study of 230 past commits found that enforcing scope would wrongly block about 45% of commits, mostly for legitimate ripple effects. Scope is most useful as a record of what changed and why. See [EVALUATION.md](EVALUATION.md#results-so-far).
+
+**SCOPE_NOTES.** When a change outside the scope is unavoidable, the agent adds a `SCOPE_NOTES:` section to its result block, one `- path::component: why` line per change. Notes are recorded beside the finding. They never authorise anything: in `enforce` mode an out-of-scope change still fails.
+
+**Records** go to `<run dir>/integrity/` as `scope_issue-<N>_attempt-<K>.json` (for `engine/compare_runs.py`) and `.md` (for people).
+
+**Other commands.** `python integrity/integrity.py gate --repo <repo> --commit <sha> --scope "<entries>"` checks a past commit, which is how the drift study in [EVALUATION.md](EVALUATION.md) is run. `lookup --repo <repo> --tag sensors` lists the tagged components (tags are `# @tags: a, b` comments directly above a function or class). `bench --repo <repo>` measures detection accuracy.
+
+The gate is deliberately independent of the runner: it lives in `integrity/` at the repo root and talks to the runner only through its CLI, the `AGENT_*` environment variables and files. It runs from `validate.json` as a `skip_if_failed` command before the adversary. See `integrity/README.md` for details.
+
+## Dangling reference check
+
+`integrity/integrity.py refs` fails a change that **removes a function, class or constant that other code still uses**. It needs no scope. It catches the failure seen in past runs where an agent rewrites a file, drops functions other files still call, and the tests don't notice.
+
+- **What counts as removed:** defined in the old version of a changed file, gone from the new version, and not defined anywhere else in the same language. Extractors cover Python (ast), PHP, JS/TS, Dart, SQL and C/Arduino.
+- **What counts as a reference:** a whole-word match in live code or tests. Comments, strings, other languages, `archive/`, `vendor/` and generated files are ignored. References only in docs are reported as `doc_only` and don't fail.
+- **Config** (`refs` section): `mode` is `enforce` (the template default) or `report`. `ignore` lists symbol names to skip. `min_length` (default 4) sets the shortest name checked, and `exclude` replaces the built-in excluded paths.
+- **Output:** on failure the agent is told which symbols were removed and every remaining reference, and to restore the symbol or update all the references in the same change. Records go to `<run dir>/integrity/refs_issue-<N>_attempt-<K>.json`.
+- **Evidence:** on 232 past commits it flagged 5, all real breakages the tests had missed, with no false alarms. Its filters were tuned on that same history, so expect the real false-alarm rate to be somewhat higher. `--commit <sha>` checks any past commit.
+- **Limits:** it matches by name only, so a same-named definition elsewhere hides a removal. Dynamic calls (string callbacks, `getattr`), removed columns and changed signatures are not checked.
 
 ## Environment blockers
 
@@ -215,13 +269,14 @@ Add project-specific rules in the config:
 - **Deterministic:** issues are created in file order, so GitHub numbers ascend in the same order the runner works them.
 - **Idempotent:** an issue whose exact title already exists is skipped, so a half-finished run can be re-run safely.
 - **Positional dependencies:** `depends_on: ["#2"]` means the second issue *in the file* (an exact title also works). It is rewritten to the real GitHub number in the `**Depends on:**` line the runner reads.
+- **Scope:** `scope: ["src/hsv.py::analyse_frame", "tests/**"]` (path, glob or `path::Qualname`) becomes the `**Scope:**` line the [scope gate](#scope-gate) checks.
 - **Labels and milestones** may be declared at the top of the file. Any others the issues use are created too. Closed milestones count as existing.
 - **Polite:** writes are paced (`--delay`, default 1s) and rate-limit rejections are retried (`--retries`, default 5).
 - It never commits, pushes, branches or opens PRs.
 
 ```bash
 python v2.py issues MyApp --dry-run    # existing titles show as SKIP
-python v2.py issues MyApp --update     # repair labels, milestones and dependency lines on existing issues
+python v2.py issues MyApp --update     # repair labels, milestones, dependency and scope lines on existing issues
 ```
 
 ## Using the scripts directly

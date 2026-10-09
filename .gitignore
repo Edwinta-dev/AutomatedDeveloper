@@ -5,6 +5,7 @@
 # _archive/ (old local files) is covered by the same rule.
 /*/
 !/engine/
+!/integrity/
 !/templates/
 !/examples/
 !/docs/

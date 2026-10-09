@@ -20,6 +20,9 @@ Design goals
   file" (an exact title of another issue in the file also works). They are
   rewritten to the real GitHub numbers in the `**Depends on:**` line that
   run_issues.py reads. `--update` repairs that line on issues that already exist.
+* Scope: `scope: ["src/hsv.py::analyse_frame", "tests/**"]` (path, glob, or
+  path::Qualname) is rendered as a `**Scope:**` line that the scope gate
+  (integrity/integrity.py gate) checks the diff against. `--update` repairs it too.
 * Declarative: labels (with colours) and milestones may be declared at the top
   of the file; any others the issues use are created too. Closed milestones
   count as existing and issues are still attached to them.
@@ -66,6 +69,7 @@ class IssueSpec:
     milestone: str = ""
     assignees: list[str] = field(default_factory=list)
     depends_on: list[int] = field(default_factory=list)   # 1-based file positions
+    scope: list[str] = field(default_factory=list)        # path | glob | path::Qualname
 
 
 @dataclass
@@ -309,6 +313,29 @@ def resolve_depends(raw: list[Any], idx: int, titles: list[str],
     return _dedupe(out)
 
 
+def resolve_scope(raw: Any, where: str) -> list[str]:
+    """Validate scope entries: non-empty strings; backslashes become '/' (warned)."""
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        raise CreateError(f"{where}: scope must be a list of strings.")
+    out: list[str] = []
+    for entry in raw:
+        s = entry.strip().strip("`").strip() if isinstance(entry, str) else ""
+        if not s:
+            raise CreateError(f"{where}: scope entries must be non-empty strings "
+                              f"(got {entry!r}).")
+        if "\\" in s:
+            fixed = s.replace("\\", "/")
+            print(f"WARNING: {where}: scope {s!r} uses backslashes; using {fixed!r}.",
+                  file=sys.stderr)
+            s = fixed
+        out.append(s)
+    return _dedupe(out)
+
+
 def _plan_from_mapping(data: dict) -> IssuePlan:
     if not isinstance(data, dict):
         raise CreateError("Issues file: top level must be an object/mapping.")
@@ -356,6 +383,7 @@ def _plan_from_mapping(data: dict) -> IssuePlan:
                 assignees=[str(x) for x in item.get("assignees", [])],
                 depends_on=resolve_depends(list(item.get("depends_on", []) or []),
                                            i, titles),
+                scope=resolve_scope(item.get("scope"), f"issues[{i}] ({titles[i - 1]!r})"),
             )
         )
     return IssuePlan(labels=labels, milestones=milestones,
@@ -367,6 +395,7 @@ _MD_MILELABEL = re.compile(
     r"\*\*Milestone:\*\*\s*(.+?)\s*(?:·\s*)?\*\*Labels:\*\*\s*(.+)")
 _MD_LABEL_TOKEN = re.compile(r"`([^`]+)`")
 _MD_DEPENDS = re.compile(r"\*\*Depends on:\*\*\s*(.+)")
+_MD_SCOPE = re.compile(r"\*\*Scope:\*\*\s*(.+)")
 
 
 def _plan_from_markdown(text: str) -> IssuePlan:
@@ -374,6 +403,7 @@ def _plan_from_markdown(text: str) -> IssuePlan:
 
     Metadata lines understood inside each issue block:
         **Depends on:** #a, #b        (heading numbers within this file)
+        **Scope:** `src/a.py::f`, `tests/**`
         **Milestone:** Name · **Labels:** `x` `y`
     Everything else in the block is the body.
     """
@@ -405,12 +435,14 @@ def _plan_from_markdown(text: str) -> IssuePlan:
         dm = _MD_DEPENDS.search(block)
         if dm:
             depends = [d.strip() for d in re.split(r"[,\s]+", dm.group(1)) if d.strip()]
+        sm = _MD_SCOPE.search(block)
+        scope = parse_scope_text(sm.group(1)) if sm else []
 
         # Body = block minus the metadata lines and a leading '> Read ...' note.
         body_lines = []
         for line in block.splitlines():
             s = line.strip()
-            if s.startswith("**Depends on:**") or s.startswith("**Milestone:**"):
+            if s.startswith(("**Depends on:**", "**Milestone:**", "**Scope:**")):
                 continue
             if s.startswith("> Read ") and "AGENTS.md" in s:
                 continue
@@ -423,7 +455,8 @@ def _plan_from_markdown(text: str) -> IssuePlan:
             labels_seen.setdefault(name, LabelSpec(name=name))
         issues.append(IssueSpec(title=titles[i], body=body, labels=labels,
                                 milestone=milestone,
-                                depends_on=resolve_depends(depends, i + 1, titles, aliases)))
+                                depends_on=resolve_depends(depends, i + 1, titles, aliases),
+                                scope=resolve_scope(scope, f"issue {titles[i]!r}")))
 
     # Markdown has no declaration section; complete_plan() adds the milestones.
     return IssuePlan(labels=list(labels_seen.values()), milestones=[],
@@ -550,10 +583,32 @@ def body_dependencies(body: str) -> list[int]:
             for n in re.findall(r"#(\d+)", line)]
 
 
+SCOPE_LINE = re.compile(r"(?m)^[ \t]*\*\*Scope:\*\*.*$")
+
+
+def scope_text(scope: list[str]) -> str:
+    """Render '`a`, `b`' for the **Scope:** line ('' when there is no scope)."""
+    return ", ".join(f"`{s}`" for s in scope)
+
+
+def parse_scope_text(text: str) -> list[str]:
+    """Inverse of scope_text: '`a`, `b`' (backticks optional) -> ['a', 'b']."""
+    ticked = re.findall(r"`([^`]+)`", text)
+    raw = ticked if ticked else text.split(",")
+    return [s.strip() for s in raw if s.strip()]
+
+
+def body_scope(body: str) -> list[str]:
+    m = SCOPE_LINE.search(body)
+    return parse_scope_text(m.group(0).split("**Scope:**", 1)[1]) if m else []
+
+
 def build_body(item: IssueSpec, contract: str, deps: str) -> str:
     parts = [item.body.rstrip()]
     if deps:
         parts.append("**Depends on:** " + deps)
+    if item.scope:
+        parts.append("**Scope:** " + scope_text(item.scope))
     if contract.strip():
         parts.append(contract.strip())
     return "\n\n".join(p for p in parts if p).strip() + "\n"
@@ -567,6 +622,27 @@ def replace_depends(body: str, deps: str, contract: str) -> str:
         return re.sub(r"\n{3,}", "\n\n", new) if not line else new
     if not line:
         return body
+    sm = SCOPE_LINE.search(body)              # Depends on goes before Scope
+    if sm:
+        return body[:sm.start()] + f"{line}\n\n" + body[sm.start():]
+    c = contract.strip()
+    if c and c in body:
+        return body.replace(c, f"{line}\n\n{c}", 1)
+    return body.rstrip() + f"\n\n{line}\n"
+
+
+def replace_scope(body: str, scope: list[str], contract: str) -> str:
+    """Rewrite (or add, or drop) the **Scope:** line of an existing body.
+    A new line goes right after **Depends on:**, else before the contract."""
+    line = f"**Scope:** {scope_text(scope)}" if scope else ""
+    if SCOPE_LINE.search(body):
+        new = SCOPE_LINE.sub(lambda _m: line, body, count=1)
+        return re.sub(r"\n{3,}", "\n\n", new) if not line else new
+    if not line:
+        return body
+    dm = DEPENDS_LINE.search(body)
+    if dm:
+        return body[:dm.end()] + f"\n\n{line}" + body[dm.end():]
     c = contract.strip()
     if c and c in body:
         return body.replace(c, f"{line}\n\n{c}", 1)
@@ -598,8 +674,13 @@ def plan_update(have: ExistingIssue, item: IssueSpec, deps: str,
     if item.milestone and item.milestone != have.milestone:
         patch["milestone"] = item.milestone          # title; swapped for a number later
     wanted = [int(n) for n in re.findall(r"#(\d+)", deps)]
-    if body_dependencies(have.body) != wanted:
-        patch["body"] = replace_depends(have.body, deps, contract)
+    body = have.body
+    if body_dependencies(body) != wanted:
+        body = replace_depends(body, deps, contract)
+    if body_scope(body) != item.scope:
+        body = replace_scope(body, item.scope, contract)
+    if body != have.body:
+        patch["body"] = body
     return patch, missing
 
 
@@ -612,7 +693,11 @@ def describe_update(have: ExistingIssue, patch: dict[str, Any], missing: list[st
     if "body" in patch:
         old = ", ".join(f"#{n}" for n in body_dependencies(have.body)) or "none"
         new = ", ".join(f"#{n}" for n in body_dependencies(patch["body"])) or "none"
-        bits.append(f"depends {old} -> {new}")
+        if old != new:
+            bits.append(f"depends {old} -> {new}")
+        old_s, new_s = body_scope(have.body), body_scope(patch["body"])
+        if old_s != new_s:
+            bits.append(f"scope {', '.join(old_s) or 'none'} -> {', '.join(new_s) or 'none'}")
     return "; ".join(bits)
 
 
@@ -698,7 +783,7 @@ def main() -> int:
                          "can, so existing issues show as SKIP; works offline otherwise.")
     ap.add_argument("--update", action="store_true",
                     help="For issues that already exist, add missing labels/milestone and "
-                         "rewrite the **Depends on:** line from the file.")
+                         "rewrite the **Depends on:** and **Scope:** lines from the file.")
     ap.add_argument("--allow-nonempty", action="store_true",
                     help="Skip the note when the repo already has issues.")
     ap.add_argument("--delay", type=float, default=1.0,
@@ -804,6 +889,8 @@ def main() -> int:
                 dep_note = f" depends on {dep_view}" if dep_view else ""
                 print(f"[{idx:03d}] WOULD CREATE [{item.milestone or '-'} | {lab}]"
                       f"{dep_note}: {item.title}")
+                if item.scope:
+                    print(f"        scope: {', '.join(item.scope)}")
                 continue
             body = build_body(item, plan.contract, deps)
             number = create_issue(gh, item, body, milestone_numbers)
