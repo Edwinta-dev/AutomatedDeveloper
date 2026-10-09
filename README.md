@@ -192,6 +192,7 @@ AutomatedDeveloper/
 ├── templates/
 │   ├── software/          copied by `v2.py new`
 │   └── ml/                copied by `v2.py new --ml`
+├── integrity/             scope gate and component index (standalone; see integrity/README.md)
 ├── examples/              example adversary and validation configs
 ├── docs/REFERENCE.md      full configuration and internals reference
 ├── <YourProject>/         your projects (git-ignored; local to your machine)
@@ -220,6 +221,7 @@ Interrupted run? `python v2.py run MyApp` resumes it. `--fresh` clears the sessi
 
 Planned work, now that the project is under version control:
 
+- **Scope gate (in trial).** Issues can declare a `scope:`, and a deterministic gate records any change outside it. It runs in report mode until [docs/EVALUATION.md](docs/EVALUATION.md) shows it pays for itself.
 - **Beyond source code.** Generalise the gates and templates to other file types: documentation, data, configuration and other non-code deliverables.
 - **One clear way to use it.** `v2.py` is now the only script at the top level. Next: drop the v1/v2 naming and make the `engine/` scripts internal.
 - **Better documentation.** Worked examples, a backlog-writing guide, and a configuration schema.

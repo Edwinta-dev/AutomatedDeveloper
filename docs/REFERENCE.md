@@ -177,13 +177,15 @@ Each issue may declare which code components it is allowed to change. The scope 
 **Modes** (config `scope.mode`):
 
 - **`report`** (default): records out-of-scope changes and never blocks.
-- **`enforce`**: an out-of-scope change fails the gate, so nothing is committed.
+- **`enforce`**: an out-of-scope change fails the gate (exit 1), so nothing is committed. So does an *unverified* file, one the adapter couldn't parse, because missing verification never counts as a pass.
 
 **Allowances:** files matching `allow_globs` (tests by default), import changes (`allow_imports`), new files (`allow_new_files`) and new functions or classes in scoped files (`allow_new_components`) are never out of scope.
 
 **SCOPE_NOTES.** When a change outside the scope is unavoidable, the agent adds a `SCOPE_NOTES:` section to its result block, one `- path::component: why` line per change. Notes are recorded beside the finding. They never authorise anything: in `enforce` mode an out-of-scope change still fails.
 
-**Records** go to `<run dir>/integrity/`.
+**Records** go to `<run dir>/integrity/` as `scope_issue-<N>_attempt-<K>.json` (for `engine/compare_runs.py`) and `.md` (for people).
+
+**Other commands.** `python integrity/integrity.py gate --repo <repo> --commit <sha> --scope "<entries>"` checks a past commit, which is how the drift study in [EVALUATION.md](EVALUATION.md) is run. `lookup --repo <repo> --tag sensors` lists the tagged components (tags are `# @tags: a, b` comments directly above a function or class). `bench --repo <repo>` measures detection accuracy.
 
 The gate is deliberately independent of the runner: it lives in `integrity/` at the repo root and talks to the runner only through its CLI, the `AGENT_*` environment variables and files. It runs from `validate.json` as a `skip_if_failed` command before the adversary. See `integrity/README.md` for details.
 
