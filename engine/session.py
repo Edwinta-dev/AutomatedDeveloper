@@ -17,15 +17,15 @@ night and — the reason this layer exists — makes it survive usage limits:
     optional total time budget is hit.
 
 Run several projects by opening several terminals, each:
-    python session.py --project ProjectA --provider claude
-    python session.py --config path/to/projectB.config.json --provider codex
+    python engine/session.py --project ProjectA --provider claude
+    python engine/session.py --config path/to/projectB.config.json --provider codex
 No multi-project scheduling lives here on purpose — that's just more processes.
 
 The three-role model (deterministic gate can approve · adversary can only veto ·
 expensive agent proposes) is configured in the PROJECT's --validate file: list
 your gate commands AND adversary.py there. This wrapper only keeps the run alive.
 
-`python session.py --self-test` runs offline checks (no subprocess, no network).
+`python engine/session.py --self-test` runs offline checks (no subprocess, no network).
 """
 from __future__ import annotations
 
@@ -430,7 +430,7 @@ def main() -> int:
                     "pauses/resumes across provider usage limits. Unknown options are "
                     "passed straight to run_issues.py (e.g. --max-issue 20).")
     ap.add_argument("--config", help="the project's run_issues.py config file")
-    ap.add_argument("--project", help="project folder beside run_issues.py (like run_issues.py --project)")
+    ap.add_argument("--project", help="project folder at the repo root, beside v2.py (like run_issues.py --project)")
     ap.add_argument("--runner", default=None,
                     help="how to launch v1 (default: this Python + run_issues.py next to this script)")
     ap.add_argument("--provider", default="claude",

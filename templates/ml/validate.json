@@ -1,5 +1,5 @@
 {
-  "//": "Three-role commit gate for ML experiments. Deterministic checks run first and are the only thing that can APPROVE; the adversary runs last, only if they all passed (skip_if_failed), and can only VETO (exit 3). Tokens: __PY__ = the supervisor's Python, __HARNESS__ = the folder holding run_issues.py / ml_gate.py / adversary.py, __PROJECT_CONFIG__ = the project's issue-automation.config.json (its ml/adversary sections). Commands run with the repo as cwd.",
+  "//": "Three-role commit gate for ML experiments. Deterministic checks run first and are the only thing that can APPROVE; the adversary runs last, only if they all passed (skip_if_failed), and can only VETO (exit 3). Tokens: __PY__ = the supervisor's Python, __HARNESS__ = engine/, the folder holding run_issues.py / ml_gate.py / adversary.py, __PROJECT_CONFIG__ = the project's issue-automation.config.json (its ml/adversary sections). Commands run with the repo as cwd.",
   "suspicious": {
     "//": "Model weights, datasets and run artifacts never get committed (gitignore data/, results/, models/); the ledger does. Top-level data/ only, so a src/data/ package is fine; max_file_mb catches stray big files.",
     "max_file_mb": 5,

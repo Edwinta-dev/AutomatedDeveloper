@@ -18,7 +18,7 @@ The [README](../README.md) covers everyday use. This page is the detail behind i
 
 ## Project files
 
-A project is a folder next to the scripts. `v2.py new` creates it from `_template/` (software) or `_template_ml/` (ML).
+A project is a top-level folder (beside `v2.py`) holding an `issue-automation.config.json`. `v2.py new` creates it from `templates/software/` or `templates/ml/`.
 
 | File | Edit it? | Purpose |
 |---|---|---|
@@ -114,7 +114,7 @@ After the agent reports success, the supervisor runs `validate.json` itself, wit
 |---|---|
 | `__PY__` | The supervisor's Python interpreter |
 | `__CHANGED_DIRS__` | Runs the command once per changed directory |
-| `__HARNESS__` | This tool's folder |
+| `__HARNESS__` | The `engine/` folder (so `__HARNESS__/adversary.py` works) |
 | `__CONFIG_DIR__` | The validate file's folder |
 | `__PROJECT_CONFIG__` | The project config file |
 | `__RUN_DIR__` | This run's state folder |
@@ -133,7 +133,7 @@ It reads the model's *last* verdict block, so an echoed answer template is never
 
 Settings live in the config's `adversary` section: `enabled`, `preset` (`software` or `ml`), `model`, and `priors` (extra context, such as the public leaderboard range for a Kaggle task). The key is read from `GEMINI_API_KEY`. Networking uses only the standard library and honours `HTTPS_PROXY`.
 
-To add the adversary to an older project, append the entry from `validate.with-adversary.example.json` as the last command in its validate file. `adversary.config.example.json` and `adversary.config.ml.example.json` show a standalone configuration.
+To add the adversary to an older project, append the entry from `examples/validate.with-adversary.example.json` as the last command in its validate file. `examples/adversary.config.example.json` and `examples/adversary.config.ml.example.json` show a standalone configuration.
 
 ## The ML gate
 
@@ -154,8 +154,8 @@ On a pass it writes `experiments/ledger.json` (best score and history) into the 
 Exit codes: `0` pass, `1` fail, `2` misconfigured.
 
 ```bash
-python ml_gate.py --config <cfg> --repo <repo> --lock     # (re)hash protected data
-python ml_gate.py --config <cfg> --repo <repo> --status   # show the best result on record
+python engine/ml_gate.py --config <cfg> --repo <repo> --lock     # (re)hash protected data
+python engine/ml_gate.py --config <cfg> --repo <repo> --status   # show the best result on record
 ```
 
 ## Environment blockers
@@ -187,7 +187,7 @@ Add project-specific rules in the config:
 
 ## Overnight sessions and usage limits
 
-`v2.py run` uses `session.py`, which runs `run_issues.py` in slices (`--slice-minutes`, default 50). Each slice is `run_issues.py --resume-or-new --on-usage-limit exit --max-hours <slice>`, so every slice continues the same run: retry counts, deferrals and half-finished issues carry over.
+`v2.py run` uses `engine/session.py`, which runs `engine/run_issues.py` in slices (`--slice-minutes`, default 50). Each slice is `run_issues.py --resume-or-new --on-usage-limit exit --max-hours <slice>`, so every slice continues the same run: retry counts, deferrals and half-finished issues carry over.
 
 `run_issues.py` ends every run with one line, `RUN_RESULT {"reason": ..., "usage_reset": ..., "committed": [...]}`, and the session acts on it:
 
@@ -226,20 +226,20 @@ python v2.py issues MyApp --update     # repair labels, milestones and dependenc
 
 ## Using the scripts directly
 
-`v2.py` only orchestrates. Each piece also runs on its own:
+`v2.py` only orchestrates. Each piece in `engine/` also runs on its own, e.g. `python engine/run_issues.py --project X`:
 
 | Script | Use |
 |---|---|
-| `run_issues.py` | `--project X`, `--list-projects`, `--resume-latest`, plus every config key as a flag (`--max-issue 20`, `--push`, ...) |
-| `create_issues.py` | `--project X` or `--repo <path> --issues <file>`, `--dry-run`, `--update` |
-| `session.py` | `--project X --provider claude` |
-| `adversary.py` | Exit 0 = no objection, 3 = veto |
-| `ml_gate.py` | Exit 0 pass, 1 fail, 2 misconfigured. `--lock`, `--status` |
-| `usage.py` | Provider cooldowns and the optional quota probe |
+| `engine/run_issues.py` | `--project X`, `--list-projects`, `--resume-latest`, plus every config key as a flag (`--max-issue 20`, `--push`, ...) |
+| `engine/create_issues.py` | `--project X` or `--repo <path> --issues <file>`, `--dry-run`, `--update` |
+| `engine/session.py` | `--project X --provider claude` |
+| `engine/adversary.py` | Exit 0 = no objection, 3 = veto |
+| `engine/ml_gate.py` | Exit 0 pass, 1 fail, 2 misconfigured. `--lock`, `--status` |
+| `engine/usage.py` | Provider cooldowns and the optional quota probe |
 
 ### Setting up a project by hand
 
-1. Copy `_template/` (or `_template_ml/`) to a new folder, e.g. `MyProject/`.
+1. Copy `templates/software/` (or `templates/ml/`) to a new top-level folder, e.g. `MyProject/`.
 2. In `issue-automation.config.json`, set `repo` to the absolute path of the checkout and adjust the issue filters.
 3. In `validate.json`, replace `TODO-test-command` with the project's test command.
 4. Fill in `project_rules.md` and `issues.yaml`.

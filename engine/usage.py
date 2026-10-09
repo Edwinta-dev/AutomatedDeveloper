@@ -18,7 +18,7 @@ provider is pluggable:
     parks the provider until the parsed reset time (or a fallback).
 
 Nothing here talks to a network by itself; the probe command does (if any).
-Run `python usage.py --self-test` for offline checks.
+Run `python engine/usage.py --self-test` for offline checks.
 """
 from __future__ import annotations
 

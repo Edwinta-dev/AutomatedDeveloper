@@ -34,9 +34,9 @@ the same keys also works). Wire it into the --validate file BEFORE the adversary
 Exit 0 = pass, 1 = fail (reasons printed; run_issues.py feeds them to the agent's
 next attempt), 2 = gate misconfigured.
 
-    python ml_gate.py --config <cfg> --repo <repo> --lock    # (re)hash protected data
-    python ml_gate.py --config <cfg> --repo <repo> --status  # show the ledger best
-    python ml_gate.py --self-test
+    python engine/ml_gate.py --config <cfg> --repo <repo> --lock    # (re)hash protected data
+    python engine/ml_gate.py --config <cfg> --repo <repo> --status  # show the ledger best
+    python engine/ml_gate.py --self-test
 """
 from __future__ import annotations
 

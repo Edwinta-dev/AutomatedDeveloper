@@ -102,7 +102,7 @@ To use Claude Code instead of Codex, add `--agent claude` (and optionally `--mod
 
 ## The recommended workflow
 
-**Use `v2.py` for everything.** It's the one supported entry point. The other scripts (`run_issues.py`, `create_issues.py`, `session.py`, ...) are the building blocks it calls. They still work on their own for unusual cases, but `v2.py` runs the preflight checks and wires them together correctly.
+**Use `v2.py` for everything.** It's the one supported entry point. The scripts in `engine/` are the building blocks it calls. They still work on their own for unusual cases, but `v2.py` runs the preflight checks and wires them together correctly.
 
 ```
 new ──► write issues.yaml + project_rules.md ──► check ──► issues ──► run ──► review & merge ──► (repeat)
@@ -131,7 +131,7 @@ Other useful commands:
 | `python v2.py usage` | Codex plan-limit %, Claude Code token usage |
 | `python v2.py run MyApp --once` | Run one slice only (good for a first test) |
 | `python v2.py run MyApp --max-hours 8` | Cap the total run time |
-| `python v2.py run MyApp --max-issue 20` | Unknown flags are passed through to `run_issues.py` |
+| `python v2.py run MyApp --max-issue 20` | Unknown flags are passed through to `engine/run_issues.py` |
 | `python v2.py issues MyApp --dry-run` | Show what would be created, without creating it |
 
 You can run several projects at once in separate terminals. Give them different agents so one hitting its usage limit doesn't stall the others.
@@ -181,21 +181,24 @@ Other safeguards are built in:
 ```
 AutomatedDeveloper/
 ├── v2.py                  ★ the entry point: new / check / issues / run / status / list / usage
-├── run_issues.py          the supervisor: one agent attempt per issue, validate, commit
-├── create_issues.py       turns issues.yaml into GitHub issues, labels and milestones
-├── session.py             keeps a run alive overnight (slices, usage-limit pause/resume)
-├── adversary.py           veto-only AI reviewer
-├── ml_gate.py             deterministic gate for ML experiments
-├── blockers.py            detects environment problems that retrying can't fix
-├── usage.py               usage-limit tracking for each agent
-├── _template/             copied by `v2.py new` for software projects
-├── _template_ml/          copied by `v2.py new --ml` for ML projects
-├── *.example.json         example adversary and validation configs
+├── engine/                the building blocks v2.py drives
+│   ├── run_issues.py      the supervisor: one agent attempt per issue, validate, commit
+│   ├── create_issues.py   turns issues.yaml into GitHub issues, labels and milestones
+│   ├── session.py         keeps a run alive overnight (slices, usage-limit pause/resume)
+│   ├── adversary.py       veto-only AI reviewer
+│   ├── ml_gate.py         deterministic gate for ML experiments
+│   ├── blockers.py        detects environment problems that retrying can't fix
+│   └── usage.py           usage-limit tracking for each agent
+├── templates/
+│   ├── software/          copied by `v2.py new`
+│   └── ml/                copied by `v2.py new --ml`
+├── examples/              example adversary and validation configs
 ├── docs/REFERENCE.md      full configuration and internals reference
-└── <YourProject>/         your projects (git-ignored; local to your machine)
+├── <YourProject>/         your projects (git-ignored; local to your machine)
+└── _archive/              retired local files (git-ignored)
 ```
 
-Any folder next to the scripts is a project, except those whose names start with `_` or `.`. Project folders are **git-ignored by default**, because they contain absolute paths and private backlogs. To version one, add a `!/<Name>/` line to `.gitignore`.
+Any top-level folder containing an `issue-automation.config.json` is a project (folders starting with `_` or `.` are always skipped). Project folders are **git-ignored by default**, because they contain absolute paths and private backlogs. To version one, add a `!/<Name>/` line to `.gitignore`.
 
 Run state and logs are kept outside the repo, in `%LOCALAPPDATA%\issue-runner\runs` on Windows and `$XDG_STATE_HOME/issue-runner/runs` elsewhere.
 
@@ -218,7 +221,7 @@ Interrupted run? `python v2.py run MyApp` resumes it. `--fresh` clears the sessi
 Planned work, now that the project is under version control:
 
 - **Beyond source code.** Generalise the gates and templates to other file types: documentation, data, configuration and other non-code deliverables.
-- **One clear way to use it.** Formalise `v2.py` as the single supported interface, and consolidate or retire the overlapping v1/v2 entry points.
+- **One clear way to use it.** `v2.py` is now the only script at the top level. Next: drop the v1/v2 naming and make the `engine/` scripts internal.
 - **Better documentation.** Worked examples, a backlog-writing guide, and a configuration schema.
 
 ## Reference documentation
@@ -229,9 +232,9 @@ Run the offline test suites at any time:
 
 ```bash
 python v2.py self-test
-python run_issues.py --self-test
-python adversary.py --self-test
-python ml_gate.py --self-test
-python usage.py --self-test
-python session.py --self-test
+python engine/run_issues.py --self-test
+python engine/adversary.py --self-test
+python engine/ml_gate.py --self-test
+python engine/usage.py --self-test
+python engine/session.py --self-test
 ```

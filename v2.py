@@ -16,9 +16,10 @@ v2.py — one entry point for agenticworkflow_v2. Running any project is five st
 A project is one folder beside this script holding ONE config file
 (issue-automation.config.json, including its "ml" and "adversary" sections), a
 rules file (project_rules.md, injected into every prompt), issues.yaml, and the
-agent/validate sidecars the templates provide. Everything here delegates to
-run_issues.py (v1), create_issues.py, session.py, ml_gate.py and adversary.py;
-those still work on their own for anything unusual.
+agent/validate sidecars the templates (templates/software, templates/ml) provide.
+Everything here delegates to engine/: run_issues.py (v1), create_issues.py,
+session.py, ml_gate.py and adversary.py; those still work on their own for
+anything unusual (python engine/run_issues.py ...).
 """
 from __future__ import annotations
 
@@ -33,15 +34,16 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+HERE = Path(__file__).resolve().parent          # repo root: project folders live here
+ENGINE = HERE / "engine"                         # run_issues.py & co. (__HARNESS__)
+sys.path.insert(0, str(ENGINE))
 
 import run_issues as v1  # noqa: E402
 import session  # noqa: E402
 
 IS_WINDOWS = os.name == "nt"
 CONFIG_NAME = "issue-automation.config.json"
-TEMPLATES = {"software": HERE / "_template", "ml": HERE / "_template_ml"}
+TEMPLATES = {"software": HERE / "templates" / "software", "ml": HERE / "templates" / "ml"}
 TODO_TEST_EXE = "TODO-test-command"
 
 
@@ -270,8 +272,8 @@ def preflight(name: str, *, online: bool = True) -> tuple[Report, dict, Path]:
                 r.errors.append(f"{vpath.name}: '{exe0}' is not on PATH ({entry.get('label')})")
             for tok in entry.get("argv", []):
                 if isinstance(tok, str) and tok.startswith("__HARNESS__/"):
-                    if not (HERE / tok[len("__HARNESS__/"):]).exists():
-                        r.errors.append(f"{vpath.name}: {tok} does not exist in {HERE}")
+                    if not (ENGINE / tok[len("__HARNESS__/"):]).exists():
+                        r.errors.append(f"{vpath.name}: {tok} does not exist in {ENGINE}")
         r.ok.append("gates, in order: " + " -> ".join(labels + [f"{x} (only if all passed)"
                                                                  for x in last]))
 
@@ -354,7 +356,7 @@ def cmd_check(args) -> int:
     r.print()
     if not r.errors and cfg.get("issues") and not args.offline:
         print("\nIssue plan (dry run; existing issues show as SKIP):", flush=True)
-        subprocess.run([sys.executable, str(HERE / "create_issues.py"), "--project", args.name,
+        subprocess.run([sys.executable, str(ENGINE / "create_issues.py"), "--project", args.name,
                         "--dry-run", "--allow-nonempty"])
     if r.errors:
         print(f"\n{len(r.errors)} thing(s) to fix before `python v2.py run {args.name}`.")
@@ -369,7 +371,7 @@ def cmd_check(args) -> int:
 
 def cmd_issues(args, extra: list[str]) -> int:
     config_path(args.name)
-    return subprocess.run([sys.executable, str(HERE / "create_issues.py"),
+    return subprocess.run([sys.executable, str(ENGINE / "create_issues.py"),
                            "--project", args.name, *extra]).returncode
 
 
@@ -408,14 +410,14 @@ def cmd_run(args, extra: list[str]) -> int:
         probe = split_cmd(args.provider_probe)
     elif provider == "codex":
         # Codex logs its 5h/weekly plan usage locally: check it before every slice.
-        probe = [sys.executable, str(HERE / "usage.py"), "--probe", "codex",
+        probe = [sys.executable, str(ENGINE / "usage.py"), "--probe", "codex",
                  "--max-percent", str(args.max_percent)]
     else:
         probe = None          # Claude: limits are only visible interactively; handled reactively
     if probe:
         print(f"usage probe before each slice: {' '.join(probe[1:])}")
     return session.run(
-        runner=[sys.executable, str(HERE / "run_issues.py")], config=str(cpath), extra=extra,
+        runner=[sys.executable, str(ENGINE / "run_issues.py")], config=str(cpath), extra=extra,
         provider=provider, probe=probe,
         slice_minutes=args.slice_minutes, grace_minutes=grace,
         usage_fallback_minutes=args.usage_fallback_minutes, max_hours=args.max_hours,

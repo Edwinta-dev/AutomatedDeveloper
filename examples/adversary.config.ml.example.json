@@ -1,5 +1,5 @@
 {
-  "//": "Veto-only adversary config for an ML / Kaggle experiment loop. Same adversary.py, different checks + priors. For a new ML project start from _template_ml/ instead: there ml_gate.py enforces the hard bounds (plausibility, frozen eval, improvement) in code, and its adversary.config.json focuses on what code cannot see.",
+  "//": "Veto-only adversary config for an ML / Kaggle experiment loop. Same adversary.py, different checks + priors. For a new ML project start from templates/ml/ instead: there ml_gate.py enforces the hard bounds (plausibility, frozen eval, improvement) in code, and its adversary.config.json focuses on what code cannot see.",
 
   "provider": "gemini",
   "model": "gemini-2.5-pro",

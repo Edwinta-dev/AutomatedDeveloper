@@ -1,5 +1,5 @@
 {
-  "//": "Example v1 --validate file showing the THREE-ROLE gate for conventional software. Deterministic checks (which can APPROVE) run first; the Gemini adversary (which can only VETO, exit 3) runs last and only if they passed (skip_if_failed). Tokens: __PY__ = the supervisor's Python, __HARNESS__ = the folder holding run_issues.py/adversary.py, __CONFIG_DIR__ = the folder holding this file. Commands run with the repo as cwd. For ML projects start from _template_ml/ instead.",
+  "//": "Example v1 --validate file showing the THREE-ROLE gate for conventional software. Deterministic checks (which can APPROVE) run first; the Gemini adversary (which can only VETO, exit 3) runs last and only if they passed (skip_if_failed). Tokens: __PY__ = the supervisor's Python, __HARNESS__ = engine/, the folder holding run_issues.py/adversary.py, __CONFIG_DIR__ = the folder holding this file. Commands run with the repo as cwd. For ML projects start from templates/ml/ instead.",
 
   "suspicious": {
     "max_file_mb": 5,
@@ -17,7 +17,7 @@
       "skip_if_failed": true,
       "timeout_minutes": 5,
       "argv": ["__PY__", "__HARNESS__/adversary.py",
-               "--config", "__HARNESS__/adversary.config.example.json",
+               "--config", "__CONFIG_DIR__/adversary.config.example.json",
                "--repo", ".", "--diff"] }
   ],
 

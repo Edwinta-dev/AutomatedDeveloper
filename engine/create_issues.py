@@ -5,10 +5,10 @@ A generalised, data-driven replacement for hand-written issue-creation scripts.
 You point it at (1) a local git repository and (2) a file describing the issues,
 and it deterministically creates everything the automated runner then works on.
 
-    python create_issues.py --project MyProject --dry-run           # same lookup as run_issues.py
-    python create_issues.py --repo /path/to/repo --issues issues.yaml
-    python create_issues.py --config issue-automation.config.json   # paths from config
-    python create_issues.py --project MyProject --update            # repair existing issues
+    python engine/create_issues.py --project MyProject --dry-run           # same lookup as run_issues.py
+    python engine/create_issues.py --repo /path/to/repo --issues issues.yaml
+    python engine/create_issues.py --config issue-automation.config.json   # paths from config
+    python engine/create_issues.py --project MyProject --update            # repair existing issues
 
 Design goals
 ------------
@@ -685,7 +685,7 @@ def main() -> int:
         description="Create GitHub issues/labels/milestones from a description file. "
                     "--repo and --issues may come from a project config (--project/--config).")
     ap.add_argument("--project", default="",
-                    help="Project folder beside run_issues.py holding issue-automation.config.*.")
+                    help="Project folder at the repo root (beside v2.py) holding issue-automation.config.*.")
     ap.add_argument("--config", default="",
                     help="Project config file (JSON/YAML) providing repo/issues. "
                          "If omitted, issue-automation.config.* in the current dir is used.")

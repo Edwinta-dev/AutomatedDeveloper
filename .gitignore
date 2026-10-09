@@ -2,9 +2,11 @@
 # Every top-level folder is treated as a project by the scripts, and projects
 # hold machine-specific paths and private backlogs. Only the templates and docs
 # are part of the tool. To version a project, add a `!/<Name>/` line below.
+# _archive/ (old local files) is covered by the same rule.
 /*/
-!/_template/
-!/_template_ml/
+!/engine/
+!/templates/
+!/examples/
 !/docs/
 
 # --- Machine-specific files ------------------------------------------------

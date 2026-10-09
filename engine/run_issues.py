@@ -7,7 +7,7 @@ runs local checks, but it does NOT own git/GitHub mutations. This Python
 supervisor independently re-validates the change before committing and commits
 one issue at a time. It never pushes or opens a PR unless asked.
 
-Branching defaults to a solo, one-branch workflow (_template/AGENTS.branching.md
+Branching defaults to a solo, one-branch workflow (templates/software/AGENTS.branching.md
 is the matching policy to paste into a project's agent instructions):
     * branch_mode=auto: if a non-base branch is checked out, continue on it;
       otherwise continue work_branch (default automation/work; local, then
@@ -35,17 +35,17 @@ Everything project-specific is configuration, not code:
     * what "validate" means for this repo                 -> --validate validate.json
     * the safety contract text handed to the agent        -> --contract-file
 
-    # Zero-repeat: keep one folder per project next to this script, holding
+    # Zero-repeat: keep one folder per project at the repo root (beside v2.py), holding
     # issue-automation.config.json and its sidecar files, then just:
-    python run_issues.py --project MyProject     # <script dir>/MyProject/issue-automation.config.*
-    python run_issues.py --list-projects
-    python run_issues.py --config path/to/issue-automation.config.json
+    python engine/run_issues.py --project MyProject     # <repo root>/MyProject/issue-automation.config.*
+    python engine/run_issues.py --list-projects
+    python engine/run_issues.py --config path/to/issue-automation.config.json
 
     # Any flag still overrides the config for a one-off:
-    python run_issues.py --max-issue 20 --push
+    python engine/run_issues.py --max-issue 20 --push
 
-    python run_issues.py --self-test          # offline unit checks
-    python run_issues.py --resume-latest      # continue an interrupted run
+    python engine/run_issues.py --self-test          # offline unit checks
+    python engine/run_issues.py --resume-latest      # continue an interrupted run
 
 Requirements: Python 3.10+, git, gh (authenticated), and the chosen agent CLI.
 PyYAML is optional (only for .yaml config files).
@@ -1080,7 +1080,7 @@ class ValidationContext:
 
     Path tokens (substituted anywhere inside an argv string, so
     "__HARNESS__/adversary.py" works):
-        __HARNESS__     directory of run_issues.py (adversary.py, ml_gate.py live here)
+        __HARNESS__     engine/, the directory of run_issues.py (adversary.py, ml_gate.py live here)
         __CONFIG_DIR__  directory of the --validate file (project sidecars live here)
         __RUN_DIR__     this run's log directory (outside the repo)
         __PROJECT_CONFIG__  the project config file (its "ml"/"adversary" sections)
@@ -1510,7 +1510,7 @@ def supervisor(args) -> int:
     end_reason = "interrupted"
     usage_reset: Optional[dt.datetime] = None
     validate_dir = (str(Path(args.validate).resolve().parent) if args.validate
-                    else str(platform_root()))
+                    else str(harness_dir()))
 
     def request_stop(signum=None, frame=None):
         if not stop_event.is_set():
@@ -1641,7 +1641,7 @@ def supervisor(args) -> int:
             result_file = run_dir / f"{tag}_agent_result.txt"
             result_file.write_text(result.raw, encoding="utf-8")
             ctx = ValidationContext(
-                harness_dir=str(platform_root()), config_dir=validate_dir,
+                harness_dir=str(harness_dir()), config_dir=validate_dir,
                 project_config=getattr(args, "config_path", ""),
                 run_dir=str(run_dir), issue_number=issue.number, issue_title=issue.title,
                 issue_file=str(issue_file), agent_result_file=str(result_file),
@@ -1993,7 +1993,7 @@ def self_test() -> int:
     check("reused branches sync with base by default", _a.sync_base == "merge")
     check("issues close on merge by default", _a.close_on == "merge")
 
-    # Per-project folders beside the script are discoverable by name.
+    # Per-project folders at the platform root are discoverable by name.
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         for name in ("Alpha", "_template", "Empty"):
@@ -2332,12 +2332,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return p
 
 
-def platform_root() -> Path:
+def harness_dir() -> Path:
+    """engine/ — where run_issues.py, adversary.py and ml_gate.py live (__HARNESS__)."""
     return Path(__file__).resolve().parent
 
 
+def platform_root() -> Path:
+    """Repo root (parent of engine/): project folders live here, beside v2.py."""
+    return harness_dir().parent
+
+
 def list_projects(root: Path) -> list[str]:
-    """Folders beside the script that contain a project config ('_x'/'.x' are skipped)."""
+    """Folders at the platform root that contain a project config ('_x'/'.x' are skipped)."""
     return sorted(d.name for d in root.iterdir()
                   if d.is_dir() and d.name[0] not in "_."
                   and any((d / n).exists() for n in DEFAULT_CONFIG_NAMES))
@@ -2362,7 +2368,7 @@ def load_project_config(explicit: str, repo_hint: str) -> tuple[dict, Optional[P
     search_dirs = [Path.cwd()]
     if repo_hint:
         search_dirs.append(Path(repo_hint).expanduser())
-    search_dirs.append(Path(__file__).resolve().parent)   # config shipped beside the script
+    search_dirs.append(platform_root())   # config shipped at the platform root
     for d in search_dirs:
         for name in DEFAULT_CONFIG_NAMES:
             cand = (d / name)

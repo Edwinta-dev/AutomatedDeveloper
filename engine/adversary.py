@@ -10,7 +10,7 @@ Role in the three-part model:
 It is wired in as one command in your validation config, e.g.:
 
   {"label": "adversarial review",
-   "argv": ["__PY__", "adversary.py", "--config", "adversary.config.json",
+   "argv": ["__PY__", "__HARNESS__/adversary.py", "--config", "adversary.config.json",
             "--repo", ".", "--diff"]}
 
 Contract (this is the whole point):
@@ -26,7 +26,7 @@ put the Kaggle leaderboard range / plausible-metric priors in the config; for
 software you put spec/security/correctness checks. The code here is domain-free.
 
 Networking uses only the Python stdlib (urllib), which honours HTTPS_PROXY.
-Run `python adversary.py --self-test` for offline checks (no network).
+Run `python engine/adversary.py --self-test` for offline checks (no network).
 """
 from __future__ import annotations
 
