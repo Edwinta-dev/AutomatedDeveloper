@@ -128,3 +128,46 @@ Everything needed is already written to disk by a run:
 | What was committed | `git log --grep "Closes #"` on the work branch |
 
 `engine/compare_runs.py` collects these into one table per arm (see its `--help`). Manual labels (necessary / gratuitous / harmful, and the comprehension scores) go in a CSV next to the results.
+
+---
+
+## Results so far
+
+### Study 2: retrospective drift (2026-10-09)
+
+**Data:** 230 runner commits from two projects, one mostly PHP/JS and one mostly Python/Dart.
+- Scopes were written blind from the issue text and the pre-change codebase.
+- The gate ran in report mode, and every out-of-scope finding was labelled by hand.
+- Scopes and labels were produced by LLM subagents, one labeller per batch.
+
+| Metric | Result | Decision threshold |
+|---|---|---|
+| Commits with any out-of-scope change | 49% | |
+| Commits with a gratuitous or harmful change | **4%** (9 commits) | keep the gate if ≥ 10% |
+| Commits with a harmful change | 1% (3 commits) | |
+| Commits enforce mode would block wrongly (every finding necessary or harmless) | **45%** | enforce only if ≤ 10% |
+| Out-of-scope share of changed lines | 6% | |
+
+| Out-of-scope finding was... | Share |
+|---|---|
+| Required, discoverable only while implementing (a caller, a shared helper, a migration table) | 40% |
+| Harmless and on-topic (mostly docs updated for the same change) | 34% |
+| Required, and the scope writer should have listed it | 22% |
+| Gratuitous | 3% |
+| Harmful | 1% |
+
+**Conclusions:**
+- **Don't enforce scope.** It would have blocked half of all commits, almost all of them wrongly.
+- **Scope drift is rare here.** At 4% of commits, gratuitous drift is below the bar for keeping a drift gate.
+- **The gate is a poor detector of bad changes.** Even with docs allowed, only about 9% of flagged commits contained a gratuitous or harmful change.
+- **The harmful changes had one shape.** A file was rewritten and functions or constants were deleted that other files still used, and the test suites didn't catch it. A targeted check finds that with no scope at all.
+
+**Revised position.** Scope is kept as a **record and explanation of change**. It tells the agent where to start, and it says why the boundary moved: a ripple effect, a doc update, or something unexplained. Safety comes from **narrow deterministic checks** for specific failure modes, starting with the dangling reference check (`integrity.py refs`).
+
+**Hypothesis for Study 3:** among out-of-scope changes, the ones the agent did *not* explain under `SCOPE_NOTES` will hold most of the gratuitous and harmful ones. If that holds, "unexplained out-of-scope" becomes a useful review signal without blocking anything.
+
+**Changes made from these results:**
+- Docs and `.env.example`, plus test files in other languages, are allowed by default.
+- Agent configuration files (`CLAUDE.md`, `AGENTS.md`, `.claude/`, `.mcp.json`) and backup files are always flagged, and the runner refuses to commit `.claude/`, `.mcp.json` and backups.
+- Module-level constants are now components that a scope can name.
+- The dangling reference check was added.

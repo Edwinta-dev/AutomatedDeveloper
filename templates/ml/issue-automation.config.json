@@ -65,11 +65,14 @@
   },
 
   "scope": {
-    "//": "Deterministic scope gate (integrity/integrity.py gate) checks each commit's diff against the issue's **Scope:** line; report = record only, enforce = block out-of-scope changes.",
+    "//": "Deterministic scope gate (integrity/integrity.py gate) records which changes fall outside the issue's **Scope:** line. Keep report mode: a study of 232 past commits found most out-of-scope changes were legitimate ripple effects or doc updates. Tests, docs and .env.example are allowed by default; agent config (CLAUDE.md, AGENTS.md, .claude/, .mcp.json) and *.bak files are always flagged unless scoped. Override with allow_globs / protect_globs.",
     "mode": "report",
-    "allow_globs": ["tests/**", "**/test_*.py", "**/*_test.py", "**/conftest.py"],
     "allow_imports": true,
     "allow_new_files": true,
     "allow_new_components": true
+  },
+  "refs": {
+    "//": "Dangling reference check (integrity/integrity.py refs): fails when a change removes a function, class or constant that other code still uses. Needs no scope. Enforced: on 232 past commits it flagged 5, all real breakages the tests missed. Add false alarms to ignore: [...]; set mode to report to only record.",
+    "mode": "enforce"
   }
 }

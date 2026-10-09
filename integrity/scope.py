@@ -24,13 +24,26 @@ EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 DEFAULT_CONFIG = {
     "mode": "report",
-    "allow_globs": ["tests/**", "**/test_*.py", "**/*_test.py", "**/conftest.py"],
+    "allow_globs": [
+        # tests (Python)
+        "tests/**", "**/test_*.py", "**/*_test.py", "**/conftest.py",
+        # tests (other languages)
+        "**/test/**", "**/__tests__/**", "**/*.test.*", "**/*.spec.*", "**/*_test.dart",
+        "**/*Test.php", "**/*_test.go",
+        # docs
+        "**/*.md", "docs/**", "**/.env.example", "**/*.env.example",
+    ],
+    # agent/tool configuration and backup files: always out_of_scope unless a scope
+    # entry names them; beats allow_globs and allow_new_files
+    "protect_globs": ["**/AGENTS.md", "**/CLAUDE.md", "**/.claude/**", "**/.mcp.json",
+                      "**/.codex/**", "**/*.bak", "**/*.bak-*", "**/*.orig"],
     "allow_imports": True,
     "allow_new_files": True,
     "allow_new_components": True,
 }
 
 IN_SCOPE, ALLOWED, OUT_OF_SCOPE, UNVERIFIED = "in_scope", "allowed", "out_of_scope", "unverified"
+PROTECTED_REASON = "protected path (agent/tool configuration or backup)"
 DIFF_LINES_PER_FINDING = 60
 
 
@@ -410,8 +423,9 @@ def load_config(path: Optional[Path]) -> dict:
         cfg[k] = v
     if cfg["mode"] not in ("report", "enforce"):
         raise ValueError(f"scope.mode must be 'report' or 'enforce', not {cfg['mode']!r}")
-    if not isinstance(cfg["allow_globs"], list):
-        raise ValueError("scope.allow_globs must be a list")
+    for k in ("allow_globs", "protect_globs"):
+        if not isinstance(cfg[k], list):
+            raise ValueError(f"scope.{k} must be a list")
     return cfg
 
 
@@ -449,6 +463,11 @@ def classify_file(ch: Change, old_b: Optional[bytes], new_b: Optional[bytes],
     # 1. whole-file / glob scope
     if scope.covers_file(path):
         add(_file_finding(path, ch.change, IN_SCOPE, "file in declared scope", old_b, new_b))
+        return fr
+    # 1b. protected paths (agent/tool config, backups) - only an explicit scope entry lifts it
+    if any(glob_match(g, path) for g in cfg.get("protect_globs", ())) or (
+            ch.old_path and any(glob_match(g, ch.old_path) for g in cfg.get("protect_globs", ()))):
+        add(_file_finding(path, ch.change, OUT_OF_SCOPE, PROTECTED_REASON, old_b, new_b))
         return fr
     # 2. allow_globs
     if any(glob_match(g, path) for g in cfg["allow_globs"]):

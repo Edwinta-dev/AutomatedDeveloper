@@ -76,7 +76,7 @@ Comma-separated; backticks optional. Each entry is one of:
 |---|---|
 | `path/to/file.py` | whole file in scope (a bare directory name also covers its contents) |
 | `src/vision/**`, `src/*.py` | glob, posix separators; `**` crosses directories, `*` and `?` do not |
-| `path.py::Qualname` | a component. `Class` covers all its methods/nested defs; `Class.method` only that method; `func` covers functions nested in it |
+| `path.py::Qualname` | a component. `Class` covers all its methods/nested defs; `Class.method` only that method; `func` covers functions nested in it; `CONST` a module-level constant (e.g. `Backend/koi/storage/memory.py::IMAGE_COLUMNS`) |
 
 No Scope line → `no scope declared: skipped`, exit 0, verdict `skipped`.
 `**Scope:** none` declares an empty scope (only allowed changes pass).
@@ -98,17 +98,37 @@ verdict** — an LLM's explanation does not authorise a change.
 Per changed file, first matching rule wins:
 
 1. File matches a whole-file/glob scope entry → `in_scope`.
-2. File matches `allow_globs` → `allowed` (`allow_glob`).
-3. Added/untracked file → `allowed` (`new_file`) if `allow_new_files`, else `out_of_scope`.
-4. Deleted or renamed file → `out_of_scope`.
-5. Adapter-level comparison by qualname (Python):
+2. File (or a renamed file's old path) matches `protect_globs` → `out_of_scope`, reason
+   `protected path (agent/tool configuration or backup)`. This beats `allow_globs` and
+   `allow_new_files`: only a scope entry naming the file (exact path or a glob) lifts it.
+3. File matches `allow_globs` → `allowed` (`allow_glob`). Allowed findings (e.g. doc
+   edits) are still listed in the record and report.
+4. Added/untracked file → `allowed` (`new_file`) if `allow_new_files`, else `out_of_scope`.
+5. Deleted or renamed file → `out_of_scope`.
+6. Adapter-level comparison by qualname (Python; functions, classes, methods and module-level constants):
    * own fingerprint changed → `in_scope` if the qualname or an ancestor is scoped, else `out_of_scope`;
    * component only in new → `in_scope` if scoped; `allowed` (`new_component`) if
      `allow_new_components` and the scope names at least one component in this file; else `out_of_scope`;
    * component only in old (removed) → `in_scope` if scoped, else `out_of_scope`;
    * `<imports>` changed → `allowed` (`import`) if `allow_imports`, else `out_of_scope`;
    * `<module>` (other module-level lines) changed → `out_of_scope`.
-6. Fallback-adapter files (non-Python) not scoped → `out_of_scope` at `<file>`.
+7. Fallback-adapter files (non-Python) not scoped → `out_of_scope` at `<file>`.
+
+### Default allowances and protected paths
+
+`allow_globs` (default) — changes that are almost always part of the same piece of work:
+
+* tests, Python: `tests/**`, `**/test_*.py`, `**/*_test.py`, `**/conftest.py`
+* tests, other languages: `**/test/**`, `**/__tests__/**`, `**/*.test.*`, `**/*.spec.*`,
+  `**/*_test.dart`, `**/*Test.php`, `**/*_test.go`
+* docs: `**/*.md`, `docs/**`, `**/.env.example`, `**/*.env.example`
+
+`protect_globs` (default) — agent/tool configuration and backup files, which an agent
+should never change as a side effect (an agent editing `CLAUDE.md` to defer its own
+issue, or committing `.mcp.json` / `.claude/settings` backups):
+`**/AGENTS.md`, `**/CLAUDE.md`, `**/.claude/**`, `**/.mcp.json`, `**/.codex/**`,
+`**/*.bak`, `**/*.bak-*`, `**/*.orig`. So `CLAUDE.md` is flagged even though `**/*.md`
+is allowed; to permit it, put `CLAUDE.md` in the issue's Scope line.
 
 A file that does not parse (old or new side) → `unverified` (never a silent pass).
 `whitespace_only` is set when the own fingerprint differs but the whitespace-insensitive
@@ -124,14 +144,21 @@ keys starting with `//` are ignored; unknown keys → exit 2):
 ```json
 {"scope": {
   "mode": "report",
-  "allow_globs": ["tests/**", "**/test_*.py", "**/*_test.py", "**/conftest.py"],
+  "allow_globs": ["tests/**", "**/test_*.py", "**/*_test.py", "**/conftest.py",
+                  "**/test/**", "**/__tests__/**", "**/*.test.*", "**/*.spec.*",
+                  "**/*_test.dart", "**/*Test.php", "**/*_test.go",
+                  "**/*.md", "docs/**", "**/.env.example", "**/*.env.example"],
+  "protect_globs": ["**/AGENTS.md", "**/CLAUDE.md", "**/.claude/**", "**/.mcp.json",
+                    "**/.codex/**", "**/*.bak", "**/*.bak-*", "**/*.orig"],
   "allow_imports": true,
   "allow_new_files": true,
   "allow_new_components": true
 }}
 ```
 
-`--mode` overrides `mode`.
+Accepted keys: `mode`, `allow_globs`, `protect_globs`, `allow_imports`,
+`allow_new_files`, `allow_new_components`. A list given in the config replaces the
+default list (it is not merged). `--mode` overrides `mode`.
 
 ## Components and tags
 
@@ -143,12 +170,19 @@ A `Component` has `qualname`, `kind`, `span` (1-based inclusive lines) plus a ge
 `components.register(adapter)`; unknown extensions use `FileAdapter` (one `<file>` component).
 
 PythonAdapter: functions, async functions, classes, nested classes, methods
-(`HSV.threshold`); spans include decorators. Lines are rstripped and blank lines ignored
+(`HSV.threshold`); spans include decorators. Module-level constants are components too
+(kind `constant`, qualname = the target name): any top-level `NAME = ...` or
+`NAME: T = ...` with a single simple-name target, including `__all__`, tuple/list/dict
+literals and multi-line values. Each has its own fingerprint, so editing one constant
+flags only that constant. Chained (`a = b = 1`), tuple-unpacking, attribute/subscript
+and augmented (`X += 1`) assignments stay in `<module>`; constants do not absorb the
+comment lines above them and carry no tags. Lines are rstripped and blank lines ignored
 before hashing. The contiguous comment block directly above a def (same indentation)
 belongs to that component, so editing its tags is a change to it. Duplicate qualnames
 (e.g. property getter/setter) become `name#2`; scope matching ignores the suffix.
 Pseudo-components: `<imports>` (module-level `import`/`from` statements, multi-line
-included) and `<module>` (all other lines outside components).
+included, plus whole top-level `if TYPE_CHECKING:` / `try:` blocks whose statements are
+all imports apart from `pass`) and `<module>` (all other lines outside components).
 
 Tags — comment lines directly above the def/decorators (`parse_tags` also accepts `//`):
 
@@ -231,11 +265,153 @@ not measure whether declared scopes are *right*, nor adversarial evasion.
 * A moved function (same qualname, same content) is not a change; a renamed function is
   a removal + an addition.
 * Comments directly above a def belong to that def; other module-level comments are `<module>`.
-* Code at module level between components (constants, `if __name__ == ...`) can only be
-  scoped by declaring the whole file.
-* Import changes inside `try:`/`if TYPE_CHECKING:` blocks: the import lines are
-  `<imports>`, but the surrounding `try`/`if` lines are `<module>`.
+* Module-level code other than constants and imports (`if __name__ == ...`, calls,
+  augmented assignments) can only be scoped by declaring the whole file.
+* A `try:`/`if` block that mixes imports with other statements (e.g. `except ImportError:
+  x = None`) is not an import block: its imports are `<imports>`, the rest `<module>`.
 * Text decoding assumes UTF-8 (Python falls back to latin-1); non-UTF-8 non-Python files
   are compared as bytes.
 * Gate time is dominated by git process start-up (~0.5 s per run on Windows).
 * Only Python has a component adapter today; everything else is whole-file.
+
+## refs: dangling reference check
+
+Catches the one kind of harmful change found in the study of 232 unattended-agent commits:
+an agent rewrites a file and deletes functions/constants that **other files still use**,
+and the test suite does not notice (e.g. IE4727 #66 deleted `find_appointment` still
+called by `book.php`; #62 deleted the `APP_LOG_FILE` define still used by `lib/errors.php`).
+Needs no scope declaration. Code: `integrity/refs.py` (standard library only).
+
+```
+python integrity/integrity.py refs [--repo R] [--commit SHA] [--config C]
+                                   [--mode report|enforce] [--record-dir D]
+                                   [--issue N --attempt K]
+```
+
+Default compares HEAD with the working tree (tracked edits + untracked files);
+`--commit SHA` compares `SHA^` with `SHA` via `git cat-file`/`git grep SHA` and never reads
+the working tree. `--issue`/`--attempt`/`--record-dir` default to `$AGENT_ISSUE_NUMBER`,
+`$AGENT_ATTEMPT`, `$AGENT_RUN_DIR/integrity`, as for `gate`.
+
+Validate step (runs with cwd = target repo):
+
+```json
+{"label": "Dangling references",
+ "argv": ["__PY__", "<path>/integrity/integrity.py", "refs", "--config", "__PROJECT_CONFIG__"]}
+```
+
+### How it decides
+
+1. For every modified / deleted / renamed file, extract the symbols the OLD version defines
+   and the NEW version does not:
+   * Python (`ast`): module-level functions, classes, UPPER_CASE constants, methods
+     (`Class.method`; methods of a class that was removed entirely are not listed —
+     the class is).
+   * PHP: `function name(` (incl. methods), `class|interface|trait|enum Name`,
+     `define('NAME'`, `const NAME =`.
+   * JS/TS/MJS/CJS: `function name`, `class Name`, `export ... name`, column-0
+     `const|let|var name =`, `exports.name =`, `module.exports = { a, b }`.
+   * Dart: `class|enum|mixin|typedef|extension Name`, column-0 `final|const name =`
+     (library-private `_names` are skipped: the analyzer already catches them).
+   * SQL: `CREATE [OR REPLACE] TABLE|VIEW|FUNCTION|PROCEDURE|INDEX|TRIGGER [IF NOT EXISTS] name`.
+   * C/C++/Arduino: `#define NAME`, column-0 function definitions `type name(...) {`.
+   * Anything else: no symbols.
+   Names shorter than `min_length` (4), in a built-in stoplist of generic names (`main`,
+   `init`, `run`, `get`, `setup`, `index`, `data`, `update`, `delete`, `save` ...) or in `ignore`
+   are skipped.
+2. One `git grep -w -F` over the NEW tree finds every line containing any candidate word.
+   A candidate is **not removed** if a file of the same language family in the new tree
+   defines it (moves between files are fine). Definitions in test files keep alive only
+   symbols that were themselves removed from a test file (a test fixture re-`define`-ing
+   `APP_LOG_FILE` does not hide the removal from `config.php`).
+3. Each remaining hit must be a real use. Filtered out (each one a false-positive pattern
+   seen on real history):
+   * hits in another language family (a Python constant vs a C global of the same name);
+     SQL objects are the exception — they are referenced from any language, in strings;
+   * comments and string literals (whole-file: `tokenize` for Python incl. docstrings,
+     a small scanner for `//`, `/* */`, `#`, quotes elsewhere);
+   * lines that are themselves a definition of the name;
+   * Python `obj.name` where `obj` is not the defining module (`label.configure()` is not
+     `client.configure`); methods only match as `.name` / `->name` / `::name`;
+   * paths in `exclude` (default: `archive/`, `vendor/`, `node_modules/`, `third_party/`,
+     `dist/`, `build/`, `.dart_tool/`, `*.min.js`, `*.g.dart`, lockfiles).
+4. Hits are classified `code` (known source extension), `test` (`tests/**`, `test_*`,
+   `*_test.*`, `*.spec.*`, `conftest.py` ...) or `doc` (`*.md`, `*.txt`, `*.rst`, `docs/**`);
+   anything else is `other`. Severity: **dangling** if any code or test hit, **doc_only**
+   if only doc hits (informational).
+
+Verdict `dangling` if any finding is dangling, else `pass`. Exit codes: report mode
+always 0; enforce mode 1 on `dangling`; 2 misconfigured (not a git repo, bad config,
+unknown commit).
+
+On `dangling` stdout lists each symbol, the file it was removed from and the remaining
+`file:line: text` references (code and test), then tells the agent: *restore the
+symbol, or update every listed reference in this same change.*
+
+### Config
+
+```json
+"refs": {"mode": "report", "min_length": 4, "ignore": ["legacy_helper"],
+         "exclude": ["archive/**", "vendor/**"]}
+```
+
+All keys optional (missing section = defaults, mode `report`); unknown keys -> exit 2.
+`exclude` replaces the default list. `ignore` takes bare names or `Class.method`.
+
+### Record
+
+`refs_issue-<N>_attempt-<K>.json`, else `refs_commit-<sha10>.json`, else
+`refs_worktree-<timestamp>.json` in the record dir:
+
+```json
+{
+  "schema_version": 1, "tool": "integrity refs", "tool_version": "0.1.0",
+  "issue": 66, "attempt": 1, "commit": null, "compared": "HEAD..working tree",
+  "mode": "report", "verdict": "dangling",
+  "counts": {"files_checked": 2, "removed_symbols": 7, "dangling": 7, "doc_only": 0,
+             "other_only": 0},
+  "findings": [{
+    "symbol": "find_appointment", "name": "find_appointment", "kind": "function",
+    "removed_from": "clinic-base/models/appointments.php", "file_change": "modified",
+    "severity": "dangling",
+    "hit_counts": {"code": 3, "test": 1, "doc": 0, "other": 0},
+    "hits": [{"path": "clinic-base/book.php", "line": 21, "class": "code",
+              "text": "$candidate = ... find_appointment($rescheduleId) : null;"}],
+    "hits_truncated": false
+  }],
+  "started": "...", "finished": "...", "seconds": 0.51
+}
+```
+
+`symbol` is `Class.method` for methods, `name` is the searched word, `kind` one of
+function / class / constant / method / export / table / view / macro ...; `hits` is
+sorted code, test, other, doc and capped at 10 (`hit_counts` has the totals);
+`other_only` counts symbols referenced only from non-code, non-doc files.
+
+### Validation on real history
+
+All 232 study commits (`_study/run_refs.py`, review in `_study/refs_review.csv`):
+
+| | first version | after false-positive fixes |
+|---|---|---|
+| IE4727 (167 commits) flagged | 5 (all true) | 5 (all true) |
+| OutdoorKoi (65 commits) flagged | 2 (both false) | 0 |
+| precision (commits) | 5/7 = 71% | 5/5 = 100% |
+
+Flagged: #62 (auth.php functions + the `APP_LOG_FILE`/`APP_VERBOSE_ERRORS` defines — the
+defines only after the test-fixture rule), #64, #66, #67, #70; every one of the 30 flagged
+symbols is undefined at that commit with live callers. Runtime ~0.5 s median, < 2 s max
+per commit (two `git cat-file --batch` calls + one `git grep`).
+
+### Limitations
+
+* Name-based, not semantic: a symbol re-defined anywhere in the same language family
+  counts as present, even if callers import it from the old module.
+* Removed methods are matched as `.name(`; dynamic dispatch, string callbacks
+  (`array_map('fn', ...)`), `getattr`, reflection and templates that build names are not
+  seen; neither are references inside strings (except SQL objects).
+* Regex extractors miss unusual definition forms (C++ templates, Dart functions and
+  methods, JS object-literal methods, PHP methods vs functions are not distinguished).
+* Column drops, renamed parameters and changed signatures are out of scope.
+* Python modules removed wholesale are found only through their symbols, not
+  `import module` lines.

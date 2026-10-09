@@ -21,6 +21,7 @@ only through CLI args, AGENT_* env vars, files and exit codes.
     python integrity/integrity.py index  --repo R [--out idx.json] [--paths GLOB ...]
     python integrity/integrity.py lookup --repo R [--tag T ...] [--any] [--name S] [--path GLOB]
     python integrity/integrity.py bench  --repo R [--samples 200] [--seed 1]
+    python integrity/integrity.py refs   [--repo R] [--commit SHA] [--mode enforce]  (refs.py)
     python integrity/integrity.py self-test
 
 Wire into validate.json (runs with cwd = target repo):
@@ -692,7 +693,7 @@ def self_test() -> int:
 
         # 11. non-.py file outside scope; module-level change
         edit("README.txt", "hello", "hello world")
-        edit("src/hsv.py", "LIMIT = 10", "LIMIT = 11")
+        edit("src/hsv.py", '"""HSV helpers."""', '"""HSV helpers!"""\nprint(1)')
         rc, rec, _ = gate(S1)
         fs = finds(rec, "out_of_scope")
         check("non-.py file outside scope flagged at <file>",
@@ -852,6 +853,57 @@ def self_test() -> int:
         check("bench leaves repo untouched + worktree removed",
               g("status", "--porcelain") == before and len(g("worktree", "list").splitlines()) == 1)
 
+        # 23. module constants, import blocks, doc/test allowances, protected paths
+        reset()
+        w("src/consts.py", '"""C."""\nfrom typing import TYPE_CHECKING\n\n__all__ = ["A"]\n'
+          'A = 1\nB: int = 2\nCOLS = (\n    "x",\n    "y",\n)\na, b = 1, 2\n\n\n'
+          'def f():\n    return A\n')
+        w("docs/GUIDE.md", "guide\n")
+        w("CLAUDE.md", "rules\n")
+        w("app/test/helpers.dart", "void h() {}\n")
+        g("add", "-A")
+        g("commit", "-qm", "consts")
+        edit("src/consts.py", '    "y",\n', '    "y",\n    "z",\n')
+        rc, rec, _ = gate("`src/consts.py::f`")
+        f = [x for fr in rec["files"] for x in fr["findings"]]
+        check("editing one module constant flags only that constant",
+              [(x["component"], x["kind"], x["category"]) for x in f]
+              == [("COLS", "constant", "out_of_scope")], f)
+        rc, rec, _ = gate("`src/consts.py::COLS`")
+        check("constant in scope via path::NAME", rc == 0 and rec["verdict"] == "pass", finds(rec))
+        reset()
+        edit("src/consts.py", "TYPE_CHECKING\n", "TYPE_CHECKING\nif TYPE_CHECKING:\n"
+             "    from os import PathLike\ntry:\n    import json\nexcept ImportError:\n"
+             "    pass\n")
+        rc, rec, _ = gate("`src/consts.py::f`")
+        check("TYPE_CHECKING / try import blocks -> <imports> allowed",
+              rc == 0 and finds(rec) == [("src/consts.py", "<imports>", "allowed", "import")],
+              finds(rec))
+        reset()
+        edit("docs/GUIDE.md", "guide", "guide v2")
+        edit("app/test/helpers.dart", "{}", "{ }")
+        edit("CLAUDE.md", "rules", "rules, defer #12")
+        w(".mcp.json", "{}\n")
+        rc, rec, _ = gate("`src/consts.py::f`")
+        fs = finds(rec)
+        check(".md doc change allowed (allow_glob)",
+              ("docs/GUIDE.md", "<file>", "allowed", "allow_glob") in fs, fs)
+        check("Dart test/ file allowed (allow_glob)",
+              ("app/test/helpers.dart", "<file>", "allowed", "allow_glob") in fs, fs)
+        check("CLAUDE.md flagged as protected despite **/*.md allowance",
+              ("CLAUDE.md", "<file>", "out_of_scope",
+               "protected path (agent/tool configuration or backup)") in fs and rc == 1, fs)
+        check(".mcp.json new file flagged despite allow_new_files",
+              (".mcp.json", "<file>", "out_of_scope",
+               "protected path (agent/tool configuration or backup)") in fs, fs)
+        rc, rec, _ = gate("`src/consts.py::f`, `CLAUDE.md`, `.mcp.json`")
+        check("explicitly scoped protected files -> in_scope, pass",
+              rc == 0 and ("CLAUDE.md", "<file>", "in_scope", "file in declared scope")
+              in finds(rec), finds(rec))
+        reset()
+
+    import refs                                    # dangling-reference check (refs.py)
+    refs.self_test(check, __file__)
     print("\n" + ("ALL INTEGRITY SELF-TESTS PASSED" if ok else "SOME INTEGRITY SELF-TESTS FAILED"))
     return 0 if ok else 1
 
@@ -859,6 +911,27 @@ def self_test() -> int:
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
+def cmd_refs(args) -> int:
+    import refs
+    try:
+        cfg = refs.load_config(Path(args.config).expanduser() if args.config else None)
+        record_dir = args.record_dir
+        if record_dir is None and os.environ.get("AGENT_RUN_DIR"):
+            record_dir = str(Path(os.environ["AGENT_RUN_DIR"]) / "integrity")
+        rc, _, text = refs.check_refs(
+            Path(args.repo).expanduser(), cfg=cfg, mode=args.mode, commit=args.commit,
+            issue=_int_or_none(args.issue if args.issue is not None
+                               else os.environ.get("AGENT_ISSUE_NUMBER")),
+            attempt=_int_or_none(args.attempt if args.attempt is not None
+                                 else os.environ.get("AGENT_ATTEMPT")),
+            record_dir=Path(record_dir) if record_dir else None, version=VERSION)
+    except (refs.RefsError, ValueError, OSError, json.JSONDecodeError) as exc:
+        print(f"REFS CHECK: MISCONFIGURED - {exc}")
+        return MISCONFIGURED
+    print(text)
+    return rc
+
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="integrity", description=__doc__.split("\n\n")[0])
@@ -893,6 +966,15 @@ def main(argv=None) -> int:
     b.add_argument("--samples", type=int, default=200)
     b.add_argument("--seed", type=int, default=1)
 
+    r = sub.add_parser("refs", help="removed-but-still-referenced symbols (exit 1 only in enforce)")
+    r.add_argument("--repo", default=".", help="target repo (default: cwd)")
+    r.add_argument("--config", help='project config JSON; its "refs" section is used')
+    r.add_argument("--mode", choices=["report", "enforce"], help="override config mode")
+    r.add_argument("--commit", help="check <sha>^..<sha> instead of HEAD..working tree")
+    r.add_argument("--issue", help="issue number; default $AGENT_ISSUE_NUMBER")
+    r.add_argument("--attempt", help="attempt number; default $AGENT_ATTEMPT")
+    r.add_argument("--record-dir", help="default $AGENT_RUN_DIR/integrity (else no records)")
+
     sub.add_parser("self-test", help="offline self-tests in temp git repos")
     args = ap.parse_args(argv)
     for stream in (sys.stdout, sys.stderr):
@@ -903,7 +985,7 @@ def main(argv=None) -> int:
     if args.cmd is None:
         ap.print_help()
         return MISCONFIGURED
-    return {"gate": cmd_gate, "index": cmd_index, "lookup": cmd_lookup, "bench": cmd_bench,
+    return {"gate": cmd_gate, "index": cmd_index, "lookup": cmd_lookup, "bench": cmd_bench, "refs": cmd_refs,
             "self-test": lambda _a: self_test()}[args.cmd](args)
 
 

@@ -4,7 +4,8 @@ components.py — format adapters: turn one file's content into named components
 This module is the seam for future formats (xlsx/docx/pptx). An adapter takes the
 raw bytes of a file and returns a `Parsed`:
 
-    components   real, addressable parts (Python: functions, classes, methods),
+    components   real, addressable parts (Python: functions, classes, methods,
+                 module-level constants),
                  each with a qualname, kind, span/locator, tags, description and
                  three fingerprints:
                    fingerprint      sha256 of the whole extent (children included)
@@ -153,6 +154,33 @@ def base_qualname(q: str) -> str:
     return re.sub(r"#\d+", "", q)
 
 
+def _constant_name(st: ast.stmt) -> Optional[str]:
+    """Target name of a module-level `NAME = ...` / `NAME: T = ...`, else None.
+
+    Chained (`a = b = 1`), tuple-unpacking, attribute/subscript and augmented
+    assignments return None and stay in `<module>`."""
+    if isinstance(st, ast.Assign) and len(st.targets) == 1 and isinstance(st.targets[0], ast.Name):
+        return st.targets[0].id
+    if isinstance(st, ast.AnnAssign) and isinstance(st.target, ast.Name):
+        return st.target.id
+    return None
+
+
+def _imports_only(st: ast.stmt) -> bool:
+    """True if every statement inside an `if`/`try` block (recursively, `pass` ignored)
+    is an import, so the whole block (header lines included) counts as `<imports>`."""
+    if isinstance(st, (ast.Import, ast.ImportFrom, ast.Pass)):
+        return True
+    if isinstance(st, ast.If):
+        bodies = [st.body, st.orelse]
+    elif isinstance(st, ast.Try) or type(st).__name__ == "TryStar":
+        bodies = [st.body, st.orelse, st.finalbody] + [h.body for h in st.handlers]
+    else:
+        return False
+    stmts = [x for b in bodies for x in b]
+    return any(not isinstance(x, ast.Pass) for x in stmts) and all(_imports_only(x) for x in stmts)
+
+
 class PythonAdapter(Adapter):
     name = "python"
     extensions = (".py", ".pyw", ".pyi")
@@ -219,6 +247,19 @@ class PythonAdapter(Adapter):
 
         visit(tree, "", None)
 
+        # module-level constants: `NAME = ...` / `NAME: T = ...` with one simple Name target
+        for st in tree.body:
+            name = _constant_name(st)
+            if name is None:
+                continue
+            q = name
+            seen[q] = seen.get(q, 0) + 1
+            if seen[q] > 1:
+                q = f"{q}#{seen[q]}"
+            end = st.end_lineno or st.lineno
+            recs.append({"q": q, "kind": "constant", "start": st.lineno, "end": end,
+                         "hs": st.lineno, "tags": [], "desc": "", "parent": None})
+
         comps: list[Component] = []
         for r in recs:
             extent = set(range(r["hs"], r["end"] + 1))
@@ -238,6 +279,9 @@ class PythonAdapter(Adapter):
             if r["parent"] is None:
                 covered |= set(range(r["hs"], r["end"] + 1))
         import_lines: set[int] = set()
+        for st in tree.body:            # `if TYPE_CHECKING:` / `try:` wrapping only imports
+            if isinstance(st, (ast.If, ast.Try)) and _imports_only(st)                     and st.lineno not in covered:
+                import_lines |= set(range(st.lineno, (st.end_lineno or st.lineno) + 1))
         for node in ast.walk(tree):
             if isinstance(node, (ast.Import, ast.ImportFrom)) and node.lineno not in covered:
                 import_lines |= set(range(node.lineno, (node.end_lineno or node.lineno) + 1))

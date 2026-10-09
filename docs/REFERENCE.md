@@ -10,6 +10,7 @@ The [README](../README.md) covers everyday use. This page is the detail behind i
 - [The adversarial reviewer](#the-adversarial-reviewer)
 - [The ML gate](#the-ml-gate)
 - [Scope gate](#scope-gate)
+- [Dangling reference check](#dangling-reference-check)
 - [Environment blockers](#environment-blockers)
 - [Overnight sessions and usage limits](#overnight-sessions-and-usage-limits)
 - [Creating issues](#creating-issues)
@@ -179,7 +180,18 @@ Each issue may declare which code components it is allowed to change. The scope 
 - **`report`** (default): records out-of-scope changes and never blocks.
 - **`enforce`**: an out-of-scope change fails the gate (exit 1), so nothing is committed. So does an *unverified* file, one the adapter couldn't parse, because missing verification never counts as a pass.
 
-**Allowances:** files matching `allow_globs` (tests by default), import changes (`allow_imports`), new files (`allow_new_files`) and new functions or classes in scoped files (`allow_new_components`) are never out of scope.
+**Allowances:** never out of scope:
+
+- files matching `allow_globs`. By default that's tests in Python, JS, Dart, PHP and Go, plus docs (`**/*.md`, `docs/**`) and `.env.example`;
+- import changes (`allow_imports`), including `try:` / `if TYPE_CHECKING:` blocks that contain only imports;
+- new files (`allow_new_files`);
+- new functions, classes or constants in scoped files (`allow_new_components`).
+
+Module-level constants are components too, so a scope can name `path.py::TABLE_COLUMNS`.
+
+**Protected paths** (`protect_globs`): `CLAUDE.md`, `AGENTS.md`, `.claude/`, `.codex/`, `.mcp.json` and `*.bak` / `*.orig` files are always out of scope unless the scope names them explicitly. They override every allowance, because an agent editing its own instructions or committing tool settings is never a side effect of an issue.
+
+**Use report mode.** A study of 230 past commits found that enforcing scope would wrongly block about 45% of commits, mostly for legitimate ripple effects. Scope is most useful as a record of what changed and why. See [EVALUATION.md](EVALUATION.md#results-so-far).
 
 **SCOPE_NOTES.** When a change outside the scope is unavoidable, the agent adds a `SCOPE_NOTES:` section to its result block, one `- path::component: why` line per change. Notes are recorded beside the finding. They never authorise anything: in `enforce` mode an out-of-scope change still fails.
 
@@ -188,6 +200,17 @@ Each issue may declare which code components it is allowed to change. The scope 
 **Other commands.** `python integrity/integrity.py gate --repo <repo> --commit <sha> --scope "<entries>"` checks a past commit, which is how the drift study in [EVALUATION.md](EVALUATION.md) is run. `lookup --repo <repo> --tag sensors` lists the tagged components (tags are `# @tags: a, b` comments directly above a function or class). `bench --repo <repo>` measures detection accuracy.
 
 The gate is deliberately independent of the runner: it lives in `integrity/` at the repo root and talks to the runner only through its CLI, the `AGENT_*` environment variables and files. It runs from `validate.json` as a `skip_if_failed` command before the adversary. See `integrity/README.md` for details.
+
+## Dangling reference check
+
+`integrity/integrity.py refs` fails a change that **removes a function, class or constant that other code still uses**. It needs no scope. It catches the failure seen in past runs where an agent rewrites a file, drops functions other files still call, and the tests don't notice.
+
+- **What counts as removed:** defined in the old version of a changed file, gone from the new version, and not defined anywhere else in the same language. Extractors cover Python (ast), PHP, JS/TS, Dart, SQL and C/Arduino.
+- **What counts as a reference:** a whole-word match in live code or tests. Comments, strings, other languages, `archive/`, `vendor/` and generated files are ignored. References only in docs are reported as `doc_only` and don't fail.
+- **Config** (`refs` section): `mode` is `enforce` (the template default) or `report`. `ignore` lists symbol names to skip. `min_length` (default 4) sets the shortest name checked, and `exclude` replaces the built-in excluded paths.
+- **Output:** on failure the agent is told which symbols were removed and every remaining reference, and to restore the symbol or update all the references in the same change. Records go to `<run dir>/integrity/refs_issue-<N>_attempt-<K>.json`.
+- **Evidence:** on 232 past commits it flagged 5, all real breakages the tests had missed, with no false alarms. Its filters were tuned on that same history, so expect the real false-alarm rate to be somewhat higher. `--commit <sha>` checks any past commit.
+- **Limits:** it matches by name only, so a same-named definition elsewhere hides a removal. Dynamic calls (string callbacks, `getattr`), removed columns and changed signatures are not checked.
 
 ## Environment blockers
 
