@@ -1,4 +1,10 @@
-# Evaluating the scope gate and component index
+# Evaluation plan
+
+> **Current focus (revised after Study 2, 2026-10-09).** The main goal is now a **human in the loop without reading code**. Agents work unattended. Documentation lets a person understand what was built, why, and at what trade-off, and steer the next round from that. Each change stays isolated and reversible.
+>
+> Token efficiency (goal 3) is deprioritised: it was never measured and isn't the strong case. Isolation (goal 1) is handled by narrow deterministic checks, not by enforcing scope. Study 4 below is the main study now. Studies 1–3 and their results are kept as the record of how we got here.
+
+## Original plan: the scope gate and component index
 
 **Question:** does declaring a scope per issue, checking it deterministically, and offering a tagged component index make the runner better than it is today, at a cost worth paying?
 
@@ -26,7 +32,7 @@ The new system is three separable pieces. Each is measured on its own, so a gain
 
 B vs A is the cheapest and most informative comparison, so run it first. C is only worth running once the retrospective study (below) shows the scope model has few false positives. Otherwise enforce mode will just cause deferrals.
 
-## Three studies, cheapest first
+## Studies, cheapest first
 
 ### Study 1: detection accuracy (offline, no agent, minutes)
 
@@ -69,6 +75,27 @@ This study alone answers whether the problem is real at all. If the gratuitous d
 1. Take a backlog of **at least 20 new issues**, all written with `scope:`. For arm A, strip the Scope lines (or point arm A at a copy of the backlog without them).
 2. Run each arm from the **same base commit**, on its own work branch, with the same agent, model and machine. Alternate which arm runs first each night, so time of day and quota state don't favour one arm.
 3. Model output varies from run to run. If the budget allows, run each arm twice and compare per-issue averages. Always report raw counts as well as percentages, since the samples are small.
+
+### Study 4: documentation for a human in the loop
+
+**Question:** working only from the decision records ([format](DECISION_RECORDS.md)), can a person who doesn't read the code understand the design, find where a bug likely starts, and steer the agent correctly?
+
+**Pilot:**
+- **Project and size:** OutdoorKoi, 10–15 new issues with real design trade-offs (sensors, camera metrics, storage).
+- **Setup:** templates with decision records enabled.
+- **Baseline:** what a non-coder has today, which is the issue text plus commit messages.
+
+| Measure | How | Go if |
+|---|---|---|
+| **Coverage** | Committed issues that have a record with every section filled or explicitly waived | ≥ 95% |
+| **Claim accuracy** | For each record, list its checkable claims: components named, tests said to run, edge cases said to be handled, alternatives said to be rejected for a stated reason. Check each against the diff and the test output | ≥ 90% hold; **< 75% stops the rationale approach** (fall back to facts-only records) |
+| **Comprehension** | For 10 records, answer 3 questions from the docs alone: *why this approach, what was given up, where would bug X most likely start?* Score against the code afterwards. Repeat with the baseline | ≥ 80% correct, and clearly better than the baseline |
+| **Steering** | Write 5 change requests from the records alone ("favour X over Y", "handle edge case Z"). The agent implements each as a new issue | ≥ 4 of 5 implemented correctly without asking for clarification |
+| **Bug localisation** | Introduce 3 realistic bugs, or use real ones. From the records alone, name the likely component | Right component in ≥ 2 of 3 |
+| **Fresh-agent continuation** | Give a new agent only the records and a follow-up issue; compare with an agent given the normal history | Completion and attempts no worse |
+| **Cost** | Extra output tokens and wall-clock per issue for writing the record; completion rate | ≤ 15% extra; completion no more than 5 points lower |
+
+**Main risk: after-the-fact rationale.** An agent can explain a choice it didn't really make. In the drift study, one agent added an option to an audit tool that let its own issue pass, and a tidy explanation of that would have read well. That's why claim accuracy is measured before anything else and is the stop condition. It's also why records separate the agent's rationale from the facts the tool verifies.
 
 ## Metrics by goal
 

@@ -1166,11 +1166,13 @@ def independent_validation(repo: Path, tools: Tools, changed_files: list[str],
     """Run every gate command. A command marked "skip_if_failed": true (e.g. a
     paid LLM reviewer) runs AFTER all other commands, always and rules alike,
     and is skipped if any of them failed, so cheap deterministic checks fail
-    fast. "timeout_minutes" bounds one command."""
+    fast. "timeout_minutes" bounds one command. Each command sees
+    AGENT_GATES_PASSED, a JSON array of the labels that passed before it."""
     details: list[str] = []
     passed = True
     changed_dirs = _changed_dirs(changed_files)
-    env = ctx.env() if ctx else None
+    base_env = ctx.env() if ctx else dict(os.environ)
+    gates_passed: list[str] = []
     deferred: list[tuple[dict, Path]] = []
 
     def run_entry(cmd: dict, cwd: Path, final: bool = False) -> None:
@@ -1183,12 +1185,17 @@ def independent_validation(repo: Path, tools: Tools, changed_files: list[str],
             print(f"VALIDATE: {label} -- skipped (an earlier gate failed)", flush=True)
             details.append(f"SKIPPED: {label} (an earlier gate failed)")
             return
+        env = dict(base_env, AGENT_GATES_PASSED=json.dumps(gates_passed))
+        all_ok = True
         for argv in _expand_argv(list(cmd["argv"]), tools, changed_dirs, ctx):
             argv = [tools.git if a == "git" else a for a in argv]
             ok, text = run_validation_command(label, argv, cwd=cwd, env=env,
                                               timeout_minutes=cmd.get("timeout_minutes"))
-            passed &= ok
+            all_ok &= ok
             details.append(text)
+        passed &= all_ok
+        if all_ok:
+            gates_passed.append(label)
 
     for entry in cfg.always:
         run_entry(entry, repo)
@@ -1802,6 +1809,11 @@ def finalize(state: RunState, repo: Path, tools: Tools, exclude: set[int],
                             for k, v in sorted(state.env_blockers.items())) or "- None")
                + f"\n\n## Final worktree\n```\n{final_dirty or 'clean'}\n```\n")
     (Path(state.run_dir) / SUMMARY_FILE_NAME).write_text(summary, encoding="utf-8")
+    try:                                    # one-page digest; never fails the run
+        import digest
+        print(f"Run digest: {digest.write_digest(state.run_dir)}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"WARNING: run digest not written: {exc}")
 
     push_status = "not pushed (push disabled)"
     if args.push:
@@ -2156,6 +2168,14 @@ def self_test() -> int:
         ])
         _vr = independent_validation(Path(tmp), _tools, [], _vc, _ctx)
         check("gate env exported", _vr.passed and "SKIPPED" not in _vr.details)
+        _vg = ValidationConfig(always=[
+            {"label": "later", "skip_if_failed": True, "argv": [_py, "-c",
+             "import json,os,sys; sys.exit(0 if json.loads(os.environ['AGENT_GATES_PASSED'])"
+             "==['first'] else 1)"]},
+            {"label": "first", "argv": [_py, "-c", "pass"]},
+        ])
+        check("AGENT_GATES_PASSED lists earlier passed gates",
+              independent_validation(Path(tmp), _tools, [], _vg, _ctx).passed)
         _vc.always.insert(0, {"label": "fails", "argv": [_py, "-c", "raise SystemExit(1)"]})
         _vr = independent_validation(Path(tmp), _tools, [], _vc, _ctx)
         check("skip_if_failed skips after a failure",

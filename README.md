@@ -46,9 +46,11 @@ Three roles keep the agent honest. Only deterministic code can approve a change.
 |---|---|---|
 | **Improver** | The coding agent (Codex, Claude Code, ...) | Proposes a change for one issue |
 | **Gate** | Your validation commands: tests, lint, and for ML projects `ml_gate.py` | **Can approve** a commit |
-| **Adversary** | `adversary.py`, a cheap second model (Gemini) that reads the diff | **Can only veto.** A pass is not an approval |
+| **Adversary** *(optional)* | `adversary.py`, a cheap second model (Gemini) that reads the diff | **Can only veto.** A pass is not an approval. Off by default for software projects, on for ML |
 
-A mistaken or prompt-injected reviewer can therefore cause at most a false alarm, never a bad commit. When an attempt is rejected, the reasons go into the agent's next prompt so it can fix them.
+A mistaken or prompt-injected reviewer can therefore cause at most a false alarm, never a bad commit.
+
+The adversary is optional. Every check that can block a commit is deterministic, so the system is complete without it. Without it you lose one check: whether the claims in a decision record are actually *true*. The record check still confirms they *match the diff by name*. That matters most for ML work, where results can look better than they are, so ML projects have it on by default. For routine software work it's mostly extra token spend, so it starts off. Turn it on per project with `"adversary": {"enabled": true}` and a `GEMINI_API_KEY`. When an attempt is rejected, the reasons go into the agent's next prompt so it can fix them.
 
 Issues are worked in a fixed, predictable order: lowest issue number first, filtered by your label, milestone and range settings, skipping any issue whose dependencies are still open.
 
@@ -60,7 +62,7 @@ Issues are worked in a fixed, predictable order: lowest issue number first, filt
 | `git` | |
 | GitHub CLI `gh` | Logged in: `gh auth login` |
 | A coding agent CLI | `codex` (default), `claude`, or `aider`, installed and logged in |
-| `GEMINI_API_KEY` | *Optional.* Enables the adversarial reviewer. Without it, reviews are skipped and logged as `UNREVIEWED` |
+| `GEMINI_API_KEY` | *Optional.* Only needed when the adversarial reviewer is enabled (the default for ML projects). Without it, reviews are skipped and logged as `UNREVIEWED` |
 
 Works on Windows, macOS and Linux.
 
@@ -219,12 +221,26 @@ Interrupted run? `python v2.py run MyApp` resumes it. `--fresh` clears the sessi
 
 ## Roadmap
 
-Planned work, now that the project is under version control:
+**Direction: keep a human in the loop without them reading code.** Agents can work for hours unattended. When you come back, the documentation should tell you what was built, why it was built that way, and what was traded off. You can then steer the next round, by proposing a different trade-off or naming the edge case behind a bug, without opening a source file. Each change stays isolated and reversible, so a wrong turn can be undone cleanly.
 
-- **Scope gate (in trial).** Issues can declare a `scope:`, and a deterministic gate records any change outside it. It runs in report mode until [docs/EVALUATION.md](docs/EVALUATION.md) shows it pays for itself.
-- **Beyond source code.** Generalise the gates and templates to other file types: documentation, data, configuration and other non-code deliverables.
-- **One clear way to use it.** `v2.py` is now the only script at the top level. Next: drop the v1/v2 naming and make the `engine/` scripts internal.
-- **Better documentation.** Worked examples, a backlog-writing guide, and a configuration schema.
+This direction comes from a study of 232 past runner commits ([results](docs/EVALUATION.md#results-so-far)):
+- **Drift is rare.** Agents seldom made gratuitous changes; out-of-scope edits were mostly legitimate ripple effects.
+- **The real damage needed a narrow check.** It came from deleting code that other files still used, which is now caught by a dedicated check.
+- **Token savings were never the strong case**, and are no longer a goal.
+
+| Step | Status |
+|---|---|
+| One validated commit per issue, unfinished work kept as tags | Done |
+| **Scope gate:** records which changes fell outside the issue's declared scope (report mode) | Done |
+| **Dangling reference check:** blocks deleting code that other code still uses | Done |
+| **Decision records:** the agent writes `docs/decisions/NNNN-slug.md` per issue (approach, alternatives, trade-offs, assumptions, edge cases, rollback). [Format](docs/DECISION_RECORDS.md) | Agent part done |
+| **Verified facts in each record:** components changed with their tags, tests run, gate verdicts, added by the tool | Done |
+| **Consistency check:** flags a rationale that doesn't match the diff (deterministic check plus the adversary) | Done |
+| **Run digest:** one page on return, covering what was done and which decisions need a human look (`v2.py digest`) | Done |
+| **Component history:** every decision grouped by component or tag, read as a design history | Planned |
+| **Pilot and evaluate** on a real project: can a person answer design questions and steer changes from the records alone? ([Study 4](docs/EVALUATION.md#study-4-documentation-for-a-human-in-the-loop)) | Planned |
+| **Beyond source code:** the same record, isolate and verify loop for spreadsheets, documents and slides, through format adapters | Later |
+| **Housekeeping:** drop the v1/v2 naming, make `engine/` internal, add worked examples and a backlog-writing guide | Ongoing |
 
 ## Reference documentation
 

@@ -29,5 +29,5 @@
     "file": "project_rules.md"
   },
   "//prompt_suffix": "Injected just before the result block. Good for verification reminders.",
-  "prompt_suffix": "Before declaring COMPLETE: run the issue's acceptance check and the full test suite; both must pass. Write tests in the same change as the code. Do not weaken or skip tests. Change only what the issue's **Scope:** line lists (imports, tests and new helpers in those files are fine). If a change outside it is unavoidable, add a SCOPE_NOTES: section to your result block with one line per change: `- path::component: why`."
+  "prompt_suffix": "Before declaring COMPLETE: run the issue's acceptance check and the full test suite; both must pass. Write tests in the same change as the code. Do not weaken or skip tests. Change only what the issue's **Scope:** line lists (imports, tests and new helpers in those files are fine). If a change outside it is unavoidable, add a SCOPE_NOTES: section to your result block with one line per change: `- path::component: why`. Then write or update the issue's decision record (docs/decisions/<NNNN>-<slug>.md, format in the project rules); it is part of the change, and the issue is not COMPLETE without it."
 }

@@ -22,6 +22,7 @@ only through CLI args, AGENT_* env vars, files and exit codes.
     python integrity/integrity.py lookup --repo R [--tag T ...] [--any] [--name S] [--path GLOB]
     python integrity/integrity.py bench  --repo R [--samples 200] [--seed 1]
     python integrity/integrity.py refs   [--repo R] [--commit SHA] [--mode enforce]  (refs.py)
+    python integrity/integrity.py record [--repo R] [--issue N] [--commit SHA] [--no-write]  (record.py)
     python integrity/integrity.py self-test
 
 Wire into validate.json (runs with cwd = target repo):
@@ -904,6 +905,8 @@ def self_test() -> int:
 
     import refs                                    # dangling-reference check (refs.py)
     refs.self_test(check, __file__)
+    import record                                  # decision record check (record.py)
+    record.self_test(check, __file__)
     print("\n" + ("ALL INTEGRITY SELF-TESTS PASSED" if ok else "SOME INTEGRITY SELF-TESTS FAILED"))
     return 0 if ok else 1
 
@@ -928,6 +931,35 @@ def cmd_refs(args) -> int:
             record_dir=Path(record_dir) if record_dir else None, version=VERSION)
     except (refs.RefsError, ValueError, OSError, json.JSONDecodeError) as exc:
         print(f"REFS CHECK: MISCONFIGURED - {exc}")
+        return MISCONFIGURED
+    print(text)
+    return rc
+
+
+def cmd_record(args) -> int:
+    import record
+    import refs
+    try:
+        cfg_path = Path(args.config).expanduser() if args.config else None
+        cfg = record.load_config(cfg_path)
+        issue_file = args.issue_file or os.environ.get("AGENT_ISSUE_FILE")
+        if args.issue_file and not Path(args.issue_file).is_file():
+            raise ValueError(f"issue file not found: {args.issue_file}")
+        result_file = args.result_file or os.environ.get("AGENT_RESULT_FILE")
+        record_dir = args.record_dir
+        if record_dir is None and os.environ.get("AGENT_RUN_DIR"):
+            record_dir = str(Path(os.environ["AGENT_RUN_DIR"]) / "integrity")
+        rc, _, text = record.check_record(
+            Path(args.repo).expanduser(), cfg=cfg, mode=args.mode, commit=args.commit,
+            issue=_int_or_none(args.issue if args.issue is not None
+                               else os.environ.get("AGENT_ISSUE_NUMBER")),
+            attempt=_int_or_none(args.attempt if args.attempt is not None
+                                 else os.environ.get("AGENT_ATTEMPT")),
+            issue_text=_read(issue_file), result_text=_read(result_file),
+            record_dir=Path(record_dir) if record_dir else None, write=not args.no_write,
+            config_path=cfg_path, version=VERSION)
+    except (GitError, refs.RefsError, ValueError, OSError, json.JSONDecodeError) as exc:
+        print(f"DECISION RECORD: MISCONFIGURED - {exc}")
         return MISCONFIGURED
     print(text)
     return rc
@@ -975,6 +1007,20 @@ def main(argv=None) -> int:
     r.add_argument("--attempt", help="attempt number; default $AGENT_ATTEMPT")
     r.add_argument("--record-dir", help="default $AGENT_RUN_DIR/integrity (else no records)")
 
+    rc_ = sub.add_parser("record", help="decision record check + verified-facts block "
+                                        "(exit 1 only in enforce)")
+    rc_.add_argument("--repo", default=".", help="target repo (default: cwd)")
+    rc_.add_argument("--config", help='project config JSON; its "record" section is used')
+    rc_.add_argument("--mode", choices=["report", "enforce"], help="override config mode")
+    rc_.add_argument("--issue", help="issue number; default $AGENT_ISSUE_NUMBER or issue header")
+    rc_.add_argument("--attempt", help="attempt number; default $AGENT_ATTEMPT")
+    rc_.add_argument("--issue-file", help="default: $AGENT_ISSUE_FILE (for the Scope line)")
+    rc_.add_argument("--result-file", help="agent result (STATUS, SCOPE_NOTES); "
+                                           "default $AGENT_RESULT_FILE")
+    rc_.add_argument("--record-dir", help="default $AGENT_RUN_DIR/integrity (else no records)")
+    rc_.add_argument("--commit", help="check <sha>^..<sha>; never writes, prints the facts")
+    rc_.add_argument("--no-write", action="store_true", help="do not write the facts block")
+
     sub.add_parser("self-test", help="offline self-tests in temp git repos")
     args = ap.parse_args(argv)
     for stream in (sys.stdout, sys.stderr):
@@ -986,7 +1032,7 @@ def main(argv=None) -> int:
         ap.print_help()
         return MISCONFIGURED
     return {"gate": cmd_gate, "index": cmd_index, "lookup": cmd_lookup, "bench": cmd_bench, "refs": cmd_refs,
-            "self-test": lambda _a: self_test()}[args.cmd](args)
+            "record": cmd_record, "self-test": lambda _a: self_test()}[args.cmd](args)
 
 
 if __name__ == "__main__":

@@ -29,8 +29,8 @@
     "open_pr": false
   },
   "adversary": {
-    "//": "Veto-only reviewer (adversary.py), the last gate in validate.json. Needs GEMINI_API_KEY; without it every review is logged UNREVIEWED and nothing is blocked. Set enabled false to turn it off.",
-    "enabled": true,
+    "//": "Optional LLM reviewer (adversary.py, Gemini), off by default: every gate that can block a commit is deterministic (tests, refs, decision record), and for routine software work a second model mostly adds token spend. Turn it on (needs GEMINI_API_KEY) for risky or claim-heavy work; it can only veto, never approve.",
+    "enabled": false,
     "preset": "software",
     "model": "gemini-2.5-pro",
     "priors": {}
@@ -45,5 +45,10 @@
   "refs": {
     "//": "Dangling reference check (integrity/integrity.py refs): fails when a change removes a function, class or constant that other code still uses. Needs no scope. Enforced: on 232 past commits it flagged 5, all real breakages the tests missed. Add false alarms to ignore: [...]; set mode to report to only record.",
     "mode": "enforce"
+  },
+  "record": {
+    "//": "Decision record check (integrity/integrity.py record): the issue's record (docs/decisions/NNNN-slug.md) must exist with every section; the check appends a tool-verified facts block and warns where the rationale and the diff disagree. Enforce fails only on a missing record or missing sections.",
+    "mode": "enforce",
+    "dir": "docs/decisions"
   }
 }
