@@ -11,6 +11,7 @@ The [README](../README.md) covers everyday use. This page is the detail behind i
 - [The ML gate](#the-ml-gate)
 - [Scope gate](#scope-gate)
 - [Dangling reference check](#dangling-reference-check)
+- [Decision record check](#decision-record-check)
 - [Environment blockers](#environment-blockers)
 - [Overnight sessions and usage limits](#overnight-sessions-and-usage-limits)
 - [Creating issues](#creating-issues)
@@ -105,7 +106,7 @@ The order is deterministic:
 
 After the agent reports success, the supervisor runs `validate.json` itself, with the target repo as the working directory. Nothing is committed unless every command exits 0.
 
-**Order:** `always` commands first, then `rules` whose `when_touched` globs match a changed file, then commands marked `"skip_if_failed": true` (in the templates: the scope check, then the adversary), in listed order, and those only if everything before them passed. So no paid review runs on code that already failed its tests.
+**Order:** `always` commands first, then `rules` whose `when_touched` globs match a changed file, then commands marked `"skip_if_failed": true` (in the templates: the scope check, the dangling reference check, the decision record check, then the adversary), in listed order, and those only if everything before them passed. So no paid review runs on code that already failed its tests.
 
 **`suspicious`:** changed files matching `deny_globs` (and not `allow_globs`), or larger than `max_file_mb`, block the commit.
 
@@ -122,7 +123,7 @@ After the agent reports success, the supervisor runs `validate.json` itself, wit
 | `__PROJECT_CONFIG__` | The project config file |
 | `__RUN_DIR__` | This run's state folder |
 
-**Environment variables** passed to each command: `AGENT_ISSUE_NUMBER`, `AGENT_ISSUE_TITLE`, `AGENT_ISSUE_FILE`, `AGENT_RESULT_FILE`, `AGENT_ATTEMPT`, `AGENT_ATTEMPT_STARTED`, `AGENT_RUN_DIR`, and related `AGENT_*` variables.
+**Environment variables** passed to each command: `AGENT_ISSUE_NUMBER`, `AGENT_ISSUE_TITLE`, `AGENT_ISSUE_FILE`, `AGENT_RESULT_FILE`, `AGENT_ATTEMPT`, `AGENT_ATTEMPT_STARTED`, `AGENT_RUN_DIR`, and related `AGENT_*` variables. `AGENT_GATES_PASSED` is a JSON array of the labels of the commands that passed earlier in the same validation run (a command that fans out over `__CHANGED_DIRS__` counts once, and only if every run passed).
 
 ## The adversarial reviewer
 
@@ -211,6 +212,16 @@ The gate is deliberately independent of the runner: it lives in `integrity/` at 
 - **Output:** on failure the agent is told which symbols were removed and every remaining reference, and to restore the symbol or update all the references in the same change. Records go to `<run dir>/integrity/refs_issue-<N>_attempt-<K>.json`.
 - **Evidence:** on 232 past commits it flagged 5, all real breakages the tests had missed, with no false alarms. Its filters were tuned on that same history, so expect the real false-alarm rate to be somewhat higher. `--commit <sha>` checks any past commit.
 - **Limits:** it matches by name only, so a same-named definition elsewhere hides a removal. Dynamic calls (string callbacks, `getattr`), removed columns and changed signatures are not checked.
+
+## Decision record check
+
+`integrity/integrity.py record` checks the issue's [decision record](DECISION_RECORDS.md) (`docs/decisions/NNNN-slug.md`). It runs after the dangling reference check and before the adversary, appends a tool-generated **Verified facts** block to the record, and compares the rationale with the diff.
+
+- **Config** (`record` section): `mode` is `enforce` (the template default) or `report`. `dir` is where records live (default `docs/decisions`). `required_sections` lists the headings every record must have (default: the sections of the [format](DECISION_RECORDS.md#the-rationale-format)). `min_words` (default 150) and `max_words` (default 2000) bound the rationale's length.
+- **ERRORs** (no record, missing sections, a bad `Status:`) fail the gate in `enforce` mode. **WARNs** (unmentioned changes or removals, references to components that don't exist, unexplained out-of-scope changes, tests that don't exist) never fail it. They are written into the facts block for the reader and the adversary.
+- **Exit codes:** 0 pass, report mode, or warnings only; 1 an ERROR in `enforce` mode; 2 misconfigured (bad config, not a git repo).
+- **Records** go to `<run dir>/integrity/record_issue-<N>_attempt-<K>.json`.
+- `--commit <sha>` checks the record of a past commit.
 
 ## Environment blockers
 

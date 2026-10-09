@@ -21,7 +21,26 @@ A record has two parts with different levels of trust. Readers should always be 
 | **Rationale:** what was done, why, alternatives, trade-offs, assumptions, edge cases | The agent, as part of its change | A claim. Useful, but it can be wrong or tidied up after the fact |
 | **Verified facts:** components changed and their tags, tests run, scope and refs verdicts, commit | The tool, after validation | Checked independently |
 
-*Status:* the agent-written rationale is in place (via the templates' `project_rules.md`). The verified-facts block, the consistency check between the two parts, the run digest and the per-component history are the next steps (see the [README roadmap](../README.md#roadmap)).
+*Status:* the agent-written rationale (via the templates' `project_rules.md`), the verified-facts block and the consistency check between the two parts are built (`integrity/integrity.py record`). The run digest and the per-component history are the next steps (see the [README roadmap](../README.md#roadmap)).
+
+## Verified facts and the consistency check
+
+`integrity/integrity.py record` runs as a gate after the tests, the scope check and the dangling reference check, and before the adversary. It finds the issue's record and appends a **Verified facts** block containing:
+
+- the components changed, with their tags;
+- symbols removed;
+- the issue's scope, and which out-of-scope changes the record explains and which it doesn't;
+- the supervisor checks that passed before it;
+- any consistency warnings.
+
+The block sits between markers and is regenerated on every attempt. Don't edit it by hand.
+
+Problems come in two levels:
+
+- **ERROR** (a missing record, a missing section, a bad `Status:`) blocks the commit in `enforce` mode.
+- **WARN** (changes the rationale doesn't mention, references to components that don't exist, unexplained out-of-scope changes, removals it doesn't mention, tests it names that don't exist) never blocks. Warnings are written into the facts block, where the reader and the adversary both see them. The adversary also checks the rationale against the diff, and can veto.
+
+`--commit <sha>` checks the record of a past commit retrospectively. Settings are in [REFERENCE.md](REFERENCE.md#decision-record-check).
 
 ## The rationale format
 

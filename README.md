@@ -232,8 +232,8 @@ This direction comes from a study of 232 past runner commits ([results](docs/EVA
 | **Scope gate:** records which changes fell outside the issue's declared scope (report mode) | Done |
 | **Dangling reference check:** blocks deleting code that other code still uses | Done |
 | **Decision records:** the agent writes `docs/decisions/NNNN-slug.md` per issue (approach, alternatives, trade-offs, assumptions, edge cases, rollback). [Format](docs/DECISION_RECORDS.md) | Agent part done |
-| **Verified facts in each record:** components changed with their tags, tests run, gate verdicts, added by the tool | Next |
-| **Consistency check:** flags a rationale that doesn't match the diff (deterministic check plus the adversary) | Next |
+| **Verified facts in each record:** components changed with their tags, tests run, gate verdicts, added by the tool | Done |
+| **Consistency check:** flags a rationale that doesn't match the diff (deterministic check plus the adversary) | Done |
 | **Run digest:** one page on return, covering what was done and which decisions need a human look | Next |
 | **Component history:** every decision grouped by component or tag, read as a design history | Planned |
 | **Pilot and evaluate** on a real project: can a person answer design questions and steer changes from the records alone? ([Study 4](docs/EVALUATION.md#study-4-documentation-for-a-human-in-the-loop)) | Planned |
