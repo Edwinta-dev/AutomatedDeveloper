@@ -219,12 +219,26 @@ Interrupted run? `python v2.py run MyApp` resumes it. `--fresh` clears the sessi
 
 ## Roadmap
 
-Planned work, now that the project is under version control:
+**Direction: keep a human in the loop without them reading code.** Agents can work for hours unattended. When you come back, the documentation should tell you what was built, why it was built that way, and what was traded off. You can then steer the next round, by proposing a different trade-off or naming the edge case behind a bug, without opening a source file. Each change stays isolated and reversible, so a wrong turn can be undone cleanly.
 
-- **Scope gate (in trial).** Issues can declare a `scope:`, and a deterministic gate records any change outside it. It runs in report mode until [docs/EVALUATION.md](docs/EVALUATION.md) shows it pays for itself.
-- **Beyond source code.** Generalise the gates and templates to other file types: documentation, data, configuration and other non-code deliverables.
-- **One clear way to use it.** `v2.py` is now the only script at the top level. Next: drop the v1/v2 naming and make the `engine/` scripts internal.
-- **Better documentation.** Worked examples, a backlog-writing guide, and a configuration schema.
+This direction comes from a study of 232 past runner commits ([results](docs/EVALUATION.md#results-so-far)):
+- **Drift is rare.** Agents seldom made gratuitous changes; out-of-scope edits were mostly legitimate ripple effects.
+- **The real damage needed a narrow check.** It came from deleting code that other files still used, which is now caught by a dedicated check.
+- **Token savings were never the strong case**, and are no longer a goal.
+
+| Step | Status |
+|---|---|
+| One validated commit per issue, unfinished work kept as tags | Done |
+| **Scope gate:** records which changes fell outside the issue's declared scope (report mode) | Done |
+| **Dangling reference check:** blocks deleting code that other code still uses | Done |
+| **Decision records:** the agent writes `docs/decisions/NNNN-slug.md` per issue (approach, alternatives, trade-offs, assumptions, edge cases, rollback). [Format](docs/DECISION_RECORDS.md) | Agent part done |
+| **Verified facts in each record:** components changed with their tags, tests run, gate verdicts, added by the tool | Next |
+| **Consistency check:** flags a rationale that doesn't match the diff (deterministic check plus the adversary) | Next |
+| **Run digest:** one page on return, covering what was done and which decisions need a human look | Next |
+| **Component history:** every decision grouped by component or tag, read as a design history | Planned |
+| **Pilot and evaluate** on a real project: can a person answer design questions and steer changes from the records alone? ([Study 4](docs/EVALUATION.md#study-4-documentation-for-a-human-in-the-loop)) | Planned |
+| **Beyond source code:** the same record, isolate and verify loop for spreadsheets, documents and slides, through format adapters | Later |
+| **Housekeeping:** drop the v1/v2 naming, make `engine/` internal, add worked examples and a backlog-writing guide | Ongoing |
 
 ## Reference documentation
 

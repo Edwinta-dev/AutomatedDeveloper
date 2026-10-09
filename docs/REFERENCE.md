@@ -26,7 +26,7 @@ A project is a top-level folder (beside `v2.py`) holding an `issue-automation.co
 |---|---|---|
 | `issue-automation.config.json` | **Yes**, this is the main config | Repo path, branching, run limits, plus the `ml`, `adversary` and `scope` sections |
 | `issues.yaml` | **Yes** | The backlog (`.yaml`, `.json` or `.md`) |
-| `project_rules.md` | **Yes** | Rules injected near the top of every issue prompt |
+| `project_rules.md` | **Yes** | Rules injected near the top of every issue prompt (including the [decision record](DECISION_RECORDS.md) format the agent must fill in) |
 | `validate.json` | Rarely | The commit gate. `new --test` fills in the test command |
 | `agent.json` | Rarely | How the agent CLI is invoked |
 | `AGENTS.branching.md` | Optional | Branch policy to paste into the target repo's `AGENTS.md` / `CLAUDE.md`, so interactive agents follow the same rules as the runner |
