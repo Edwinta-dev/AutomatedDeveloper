@@ -488,12 +488,18 @@ def cmd_digest(args) -> int:
     cpath = config_path(args.name)
     cfg = v1.load_config_file(cpath)
     repo = resolve_beside(cpath.parent, str(cfg.get("repo") or "."))
-    run_dir = latest_run_dir(repo) if repo.exists() else None
-    if run_dir is None:
-        print(f"no runs found for {repo}")
-        return 1
     import digest
-    print(f"Digest: {digest.write_digest(str(run_dir))}")
+    if getattr(args, "run", None):                     # one run only
+        out = digest.write_digest(args.run, single=True)
+    else:                                              # every run since the last merge
+        run_dir = latest_run_dir(repo) if repo.exists() else None
+        if run_dir is None:
+            print(f"no runs found for {repo}")
+            return 1
+        out = digest.write_digest(str(run_dir), single=False)
+    if getattr(args, "print", False):
+        print(out.read_text(encoding="utf-8"))
+    print(f"Digest: {out}")
     return 0
 
 
@@ -596,8 +602,11 @@ def main() -> int:
 
     p = sub.add_parser("status", help="commits, deferrals, reviews, ML best")
     p.add_argument("name")
-    p = sub.add_parser("digest", help="write DIGEST.md for the project's latest run")
+    p = sub.add_parser("digest", help="write DIGEST.md: all runs on the work branch since its "
+                                      "last merge into the base (or one run with --run)")
     p.add_argument("name")
+    p.add_argument("--run", help="run id or run dir: digest that run only")
+    p.add_argument("--print", action="store_true", help="also print the digest")
     sub.add_parser("list", help="projects beside this script")
     sub.add_parser("usage", help="Codex plan-limit %% and Claude Code token usage, from local logs")
     sub.add_parser("self-test", help="offline checks")
