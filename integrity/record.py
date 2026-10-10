@@ -280,6 +280,68 @@ class Trees:
         out = git_text(self.repo, "ls-tree", "--name-only", self.new_rev, "--", d + "/")
         return sorted(norm_path(x) for x in out.splitlines() if x.strip())
 
+    # -- path resolution: records often name paths relative to a subproject
+    #    (`koi/x.py` for `Backend/koi/x.py`) or as bare file names (`x.py`).
+    def tracked(self) -> tuple[set, set]:
+        """(files, dirs) present in the old or the new tree."""
+        if not hasattr(self, "_tracked"):
+            files: set = set()
+            for rev in (self.old_rev, self.new_rev):
+                if rev == EMPTY_TREE:
+                    continue
+                if rev is None:
+                    out = git_text(self.repo, "ls-files", "-co", "--exclude-standard")
+                else:
+                    out = git_text(self.repo, "ls-tree", "-r", "--name-only", rev)
+                files.update(norm_path(x) for x in out.splitlines() if x.strip())
+            dirs = {f.rsplit("/", i)[0] for f in files for i in range(1, f.count("/") + 1)}
+            self._tracked = (files, dirs)
+            self._res: dict = {}
+        return self._tracked
+
+    def resolve(self, ref: str, comp: Optional[str] = None) -> tuple[str, list[str]]:
+        """-> (status, repo paths). status: exact | suffix | ambiguous | missing.
+        exact: the path exists from the repo root; suffix: exactly one tracked path ends with
+        it (segment aligned), or several do and some hold `comp` (those are returned);
+        ambiguous: several match and `comp` does not disambiguate."""
+        ref = norm_path(ref)
+        files, dirs = self.tracked()
+        key = (ref, comp)
+        if key in self._res:
+            return self._res[key]
+        r = ref.rstrip("/")
+        if r in files or r in dirs or self.exists(r, "old") or self.exists(r, "new"):
+            res = ("exact", [r])
+        else:
+            pool = dirs if ref.endswith("/") else files | dirs
+            m = sorted(x for x in pool if x.endswith("/" + r))
+            if not m:
+                res = ("missing", [])
+            elif len(m) == 1:
+                res = ("suffix", m)
+            else:
+                hold = [x for x in m if comp is not None and self.has_comp(x, comp)]
+                res = ("suffix", hold) if hold else ("ambiguous", m)
+        self._res[key] = res
+        return res
+
+    def has_comp(self, path: str, q: str) -> bool:
+        if adapter_for(path).name == "file":
+            return True
+        names = (self.qualnames(path, "old") or set()) | (self.qualnames(path, "new") or set())
+        return base_qualname(q) in names
+
+    def aliases(self, path: str) -> list[str]:
+        """`path` and every segment-aligned suffix of it that resolves to it alone."""
+        parts = path.split("/")
+        out = [path]
+        for i in range(1, len(parts)):
+            sfx = "/".join(parts[i:])
+            st, ps = self.resolve(sfx)
+            if st == "suffix" and ps == [path]:
+                out.append(sfx)
+        return out
+
 
 # ---------------------------------------------------------------------------
 # mentions
@@ -312,18 +374,46 @@ def path_refs(text: str) -> list[str]:
     return list(dict.fromkeys(out))
 
 
+BRACE_RE = re.compile(r"([\w.\-/]*)\{([\w.\-]+(?:,[\w.\-]+)+)\}([\w.\-/]*)")
+
+
+def expand_braces(text: str) -> str:
+    """`text` plus, on extra lines, the expansions of shell-style path groups such as
+    `storage/{base,memory}.py` (-> storage/base.py, storage/memory.py)."""
+    extra = []
+    for m in BRACE_RE.finditer(text):
+        extra += ["`" + m.group(1) + x + m.group(3) + "`" for x in m.group(2).split(",")]
+    return text + ("\n" + "\n".join(extra) if extra else "")
+
+
 def path_mentioned(text: str, path: str) -> bool:
     """`path` appears on its own (not as the `path::` prefix of a component reference)."""
     return bool(re.search(r"(?<![\w/.\-])" + re.escape(path) + r"(?![\w/\-]|::|\.\w)", text))
 
 
+def resolve_refs(refs_: list[tuple[str, str]], trees: "Trees") -> list[tuple[str, str]]:
+    """Component references plus their paths resolved to repo paths (Trees.resolve)."""
+    out = []
+    for p, q in refs_:
+        out.append((p, q))
+        st, ps = trees.resolve(p, q)
+        if st in ("exact", "suffix"):
+            out += [(x, q) for x in ps]
+    return list(dict.fromkeys(out))
+
+
 def comp_mentioned(text: str, refs_: list[tuple[str, str]], path: str, q: str,
-                   old_path: Optional[str] = None, removed: bool = False) -> bool:
+                   old_path: Optional[str] = None, removed: bool = False,
+                   trees: Optional["Trees"] = None) -> bool:
     """Mentioned as `path::Name` (or an enclosing `path::Class`), or by its bare file path.
     A removed component also counts when its bare name is mentioned (it no longer exists,
     so there is nothing else to call it)."""
     paths = {path} | ({old_path} if old_path else set())
-    if any(path_mentioned(text, p) for p in paths):
+    spellings = set(paths)
+    if trees is not None:
+        for p in paths:
+            spellings.update(trees.aliases(p))
+    if any(path_mentioned(text, p) for p in spellings):
         return True
     if removed and q not in PSEUDO:
         leaf = base_qualname(q).rsplit(".", 1)[-1]
@@ -339,7 +429,9 @@ def comp_mentioned(text: str, refs_: list[tuple[str, str]], path: str, q: str,
     # component as a backticked bare name (`GCC_MIN`, `Class.method`)
     if any(p in paths for p, _ in refs_):
         leaf = bq.rsplit(".", 1)[-1]
-        for name in {bq, leaf}:
+        parts = bq.split(".")
+        enclosing = {".".join(parts[:i]) for i in range(1, len(parts))}   # `Class` covers its methods
+        for name in {bq, leaf} | enclosing:
             if re.search(r"`" + re.escape(name) + r"(?:\(\))?`", text):
                 return True
     return False
@@ -507,7 +599,7 @@ def check_record(repo: Path, *, cfg: dict, mode: Optional[str] = None,
     text = ""
     usable = rec_path is not None and not any(f["code"] == "record_not_updated" for f in findings)
     if rec_path is not None:
-        text = rationale_of(_record_text(trees.read(rec_path, "new")) or "")
+        text = expand_braces(rationale_of(_record_text(trees.read(rec_path, "new")) or ""))
         parsed = parse_markdown(text)
 
     # changed components (classification with an empty scope)
@@ -596,8 +688,8 @@ def check_record(repo: Path, *, cfg: dict, mode: Optional[str] = None,
         if ver:
             body = ver[1]
             for pth in path_refs(body) + [p for p, _ in comp_refs(body)]:
-                if refs.hit_class(pth) == "test" and not trees.exists(pth, "new") \
-                        and pth not in flagged:
+                if refs.hit_class(pth) == "test" and pth not in flagged \
+                        and trees.resolve(pth)[0] == "missing":
                     flagged.add(pth)
                     findings.append(_finding(WARN, "verify_missing", "'How it was verified' names "
                                              f"a test file that does not exist: {pth}", pth))
@@ -612,15 +704,19 @@ def check_record(repo: Path, *, cfg: dict, mode: Optional[str] = None,
             lab = f"{pth}::{q}"
             if pth in flagged or lab in flagged:
                 continue
-            if not (trees.exists(pth, "old") or trees.exists(pth, "new")):
+            st, ps = trees.resolve(pth, q)
+            if st == "missing":
                 flagged.add(pth)
                 findings.append(_finding(WARN, "ref_missing", "references something that doesn't "
                                          f"exist: {lab} (no such file)", lab))
                 continue
-            if adapter_for(pth).name == "file":
+            if st == "ambiguous":
+                flagged.add(lab)
+                findings.append(_finding(WARN, "ref_ambiguous", f"ambiguous reference: {lab} "
+                                         f"matches {len(ps)} files ({', '.join(ps[:4])}) and none "
+                                         "defines it; use the repo-relative path", lab))
                 continue
-            names = (trees.qualnames(pth, "old") or set()) | (trees.qualnames(pth, "new") or set())
-            if base_qualname(q) not in names:
+            if not any(trees.has_comp(x, q) for x in ps):
                 flagged.add(lab)
                 findings.append(_finding(WARN, "ref_missing", "references something that doesn't "
                                          f"exist: {lab} (no such component in the old or new "
@@ -628,20 +724,29 @@ def check_record(repo: Path, *, cfg: dict, mode: Optional[str] = None,
         for pth in path_refs(text):
             if pth in flagged or pth.rstrip("/") in flagged:
                 continue
-            if not (trees.exists(pth, "old") or trees.exists(pth, "new")):
+            st, ps = trees.resolve(pth)
+            if st == "missing":
                 flagged.add(pth)
                 findings.append(_finding(WARN, "ref_missing", "references something that doesn't "
                                          f"exist: {pth}", pth))
+            elif st == "ambiguous" and not set(ps) & set(changed):
+                flagged.add(pth)
+                findings.append(_finding(WARN, "ref_ambiguous", f"ambiguous reference: {pth} "
+                                         f"matches {len(ps)} files ({', '.join(ps[:4])}); use "
+                                         "the repo-relative path", pth))
         # 2g. coverage
+        rrefs = resolve_refs(crefs, trees)
         for row in comps:
             if row["whitespace_only"]:
                 continue
             coverage["changed_components"] += 1
             if row.get("component") == FILE and row["change"] == "new file":
-                ok = row["path"] in text      # any mention of a new file, incl. path::Name
+                # any mention of a new file (any unique spelling), incl. path::Name
+                ok = any(re.search(r"(?<![\w/.\-])" + re.escape(a) + r"(?![\w\-])", text)
+                         for a in trees.aliases(row["path"]))
             else:
-                ok = comp_mentioned(text, crefs, row["path"], row["component"], row["old_path"],
-                                    removed=row["change"] == "removed")
+                ok = comp_mentioned(text, rrefs, row["path"], row["component"], row["old_path"],
+                                    removed=row["change"] == "removed", trees=trees)
             if ok:
                 coverage["mentioned"] += 1
             else:
@@ -658,12 +763,12 @@ def check_record(repo: Path, *, cfg: dict, mode: Optional[str] = None,
         scope_verdict = "violation" if oos else "pass"
         sec = find_section(parsed, "Changes outside the scope") if usable else None
         stext = sec[1] if sec else ""
-        srefs = comp_refs(stext)
+        srefs = resolve_refs(comp_refs(stext), trees)
         olds = {fr.path: fr.old_path for fr in sfiles}
         for f in oos:
             lab = f.target
             ok = comp_mentioned(stext, srefs, f.path, f.component, olds.get(f.path),
-                                removed=f.change == "removed") if usable else False
+                                removed=f.change == "removed", trees=trees) if usable else False
             oos_info["total"] += 1
             oos_info["explained"] += int(ok)
             oos_info["items"].append({"target": lab, "explained": ok, "change": f.change})
@@ -689,6 +794,9 @@ def check_record(repo: Path, *, cfg: dict, mode: Optional[str] = None,
                                      f"{r['symbol']} (from {r['path']}) without mentioning it",
                                      f"{r['path']}::{r['symbol']}"))
 
+    seen_msgs: set = set()                        # the same message once
+    findings = [f for f in findings
+                if not (f["message"] in seen_msgs or seen_msgs.add(f["message"]))]
     counts = {s: sum(1 for f in findings if f["severity"] == s) for s in (ERROR, WARN, INFO)}
     verdict = "fail" if counts[ERROR] else "pass"
 
@@ -1092,6 +1200,46 @@ def self_test(check, integrity_py: str) -> None:
                   and (repo / "docs/decisions/0007-totals.md").read_text() == "dirty\n"
                   and BEGIN in text and "## Verified facts" in text
                   and (rd / f"record_commit-{sha[:10]}.json").is_file(), text)
+            reset()
+
+            # path resolution: subproject-relative, bare file name, ambiguous, braces
+            w("Backend/koi/worker/poller.py", "def calibrate(x):\n    return x\n\n\n"
+              "class Job:\n    def run(self):\n        return 1\n")
+            w("Backend/koi/storage/base.py", "def save(x):\n    return x\n")
+            w("Backend/koi/storage/memory.py", "def save(x):\n    return x\n")
+            w("Backend/tests/test_calib.py", "def test_fit():\n    assert True\n")
+            w("Backend/a/util.py", "def f():\n    return 1\n")
+            w("Backend/b/util.py", "def g():\n    return 1\n")
+            g("add", "-A")
+            g("commit", "-qm", "backend")
+            w("Backend/koi/worker/poller.py", "def calibrate(x):\n    return -x\n\n\n"
+              "class Job:\n    def run(self):\n        return 2\n")
+            w("Backend/koi/storage/base.py", "def save(x):\n    return -x\n")
+            w("Backend/koi/storage/memory.py", "def save(x):\n    return -x\n")
+            w("Backend/a/util.py", "def f():\n    return 2\n")
+            rt = GOOD_RECORD.format(filler=filler).replace(
+                "old_helper was deleted because nothing used it.",
+                "`koi/worker/poller.py::calibrate` flips sign; `poller.py::calibrate` again; "
+                "the `Job` class changed; `util.py::f` too; see `util.py::nope`, `util.py`, "
+                "`storage/{base,memory}.py` and `worker/ghost.py`.").replace(
+                "Ran `tests/test_app.py` (test_total).",
+                "Ran `test_calib.py` and `tests/test_calib.py` (test_fit).")
+            w("docs/decisions/0007-totals.md", rt)
+            rc, rec, _ = run(write=False)
+            msgs = [f["message"] for f in rec["findings"] if f["severity"] == WARN]
+            check("record: subproject-relative and bare-file refs resolve (no ref_missing)",
+                  not any("calibrate" in m or "test_calib" in m or "util.py::f" in m
+                          for m in msgs) and any("worker/ghost.py" in m for m in msgs), msgs)
+            check("record: ambiguous ref not holding the component -> WARN ambiguous",
+                  any("ambiguous" in m and "util.py::nope" in m for m in msgs)
+                  # bare `util.py` is ambiguous but one match changed -> accepted
+                  and not any("ambiguous reference: util.py " in m for m in msgs), msgs)
+            check("record: subproject-relative / bare / brace mentions count toward coverage",
+                  not any("not mentioned" in m and "Backend/" in m for m in msgs)
+                  and rec["coverage"]["mentioned"] == rec["coverage"]["changed_components"],
+                  (rec["coverage"], msgs))
+            check("record: duplicate WARN messages reported once",
+                  len(msgs) == len(set(msgs)), msgs)
             reset()
 
             # CLI: env vars, JSON record schema, exit codes
