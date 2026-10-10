@@ -322,7 +322,8 @@ def preflight(name: str, *, online: bool = True) -> tuple[Report, dict, Path]:
                     r.ok.append(f"preflight: {label}")
                 else:
                     r.errors.append(f"preflight failed: {label} (exit {cp.returncode}) "
-                                    f"{cp.stdout.strip()[-300:]}")
+                                    f"{cp.stdout.strip()[-300:]}"
+                                    + (f" -> {entry['hint']}" if entry.get("hint") else ""))
             except subprocess.TimeoutExpired:
                 r.errors.append(f"preflight timed out: {label} (a service may be hung)")
             except FileNotFoundError:

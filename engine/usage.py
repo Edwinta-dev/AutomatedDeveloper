@@ -52,6 +52,9 @@ _LIMIT_PATTERNS = [
     r"overloaded",
     r"insufficient[_\s]?quota",
     r"you have hit your",
+    r"you(?:'|’)?ve hit your",
+    r"session[\s_-]?limit",
+    r"weekly[\s_-]?limit",
     r"limit reached",
     r"try again (later|in|at)",
 ]
@@ -72,8 +75,8 @@ _REL_RE = re.compile(
     re.IGNORECASE,
 )
 _CLOCK_RE = re.compile(
-    r"(?:try again at|resets? at|available at|retry at)\s+"
-    r"(\d{1,2}):(\d{2})\s*(am|pm)?\s*(utc|gmt)?",
+    r"(?:try again at|resets?(?:\s+at)?|available at|retry at)\s+"
+    r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(utc|gmt)?(?:\s*\(([A-Za-z_]+/[A-Za-z_/+-]+)\))?",
     re.IGNORECASE,
 )
 _ISO_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?)\b")
@@ -116,19 +119,30 @@ def parse_reset_datetime(text: str, *, ref: Optional[datetime] = None) -> Option
             delta = timedelta(minutes=n)
         return ref + delta
 
-    m = _CLOCK_RE.search(text)
-    if m:
-        hh, mm = int(m.group(1)), int(m.group(2))
+    for m in _CLOCK_RE.finditer(text):
+        if m.group(2) is None and not m.group(3):
+            continue                      # bare "resets 5": not a clock time
+        hh, mm = int(m.group(1)), int(m.group(2) or 0)
         ampm = (m.group(3) or "").lower()
         if ampm == "pm" and hh < 12:
             hh += 12
         elif ampm == "am" and hh == 12:
             hh = 0
+        # Claude Code names the zone: "resets 1:20pm (Asia/Singapore)".
+        tz = timezone.utc
+        if m.group(5):
+            try:
+                from zoneinfo import ZoneInfo
+                tz = ZoneInfo(m.group(5))
+            except Exception:  # noqa: BLE001  (no tzdata on Windows): local time
+                tz = datetime.now().astimezone().tzinfo or timezone.utc
         if 0 <= hh <= 23 and 0 <= mm <= 59:
-            cand = ref.astimezone(timezone.utc).replace(hour=hh, minute=mm, second=0, microsecond=0)
+            cand = ref.astimezone(tz).replace(hour=hh, minute=mm, second=0, microsecond=0)
+            cand = cand.astimezone(timezone.utc)
             if cand <= ref:                      # already passed today -> tomorrow
                 cand += timedelta(days=1)
             return cand
+        break
     return None
 
 
@@ -433,6 +447,16 @@ def self_test() -> int:
     check("clock rolls to tomorrow", clk2 == ref.replace(hour=11, minute=0) + timedelta(days=1))
     check("epoch parse",
           parse_reset_datetime("x 1790000000 y") == datetime.fromtimestamp(1790000000, tz=timezone.utc))
+
+    real = "You’ve hit your session limit · resets 1:20pm (Asia/Singapore)"
+    check("detect claude session limit", detect_usage_limit(real))
+    check("detect ascii session limit", detect_usage_limit("You've hit your session limit"))
+    sl = parse_reset_datetime(real, ref=ref)
+    check("session-limit reset parsed", sl is not None and ref < sl <= ref + timedelta(days=1)
+          and sl.astimezone(sl.tzinfo).minute == 20)
+    check("resets 5pm parsed", parse_reset_datetime("resets 5pm", ref=ref) is not None)
+    check("resets in 2 hours", parse_reset_datetime("resets in 2 hours", ref=ref)
+          == ref + timedelta(hours=2))
 
     um = UsageManager(fallback_minutes=30)
     check("available by default", um.available("claude"))

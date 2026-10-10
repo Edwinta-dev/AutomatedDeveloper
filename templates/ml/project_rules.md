@@ -30,7 +30,7 @@ Also save validation predictions to `results/val_predictions.csv`, so the gate c
 
 ## Decision record
 
-Every issue ends with a decision record committed alongside the code: `docs/decisions/<issue number, 4 digits>-<short-slug>.md` (update it if it already exists). Write it for someone who will never open the code. Only state what actually happened: don't list tests you didn't run, alternatives you didn't weigh, or edge cases you didn't check ("Not checked" is fine). Name code as `path::Name`. Aim for 300-700 words; leave out a section only by saying why.
+Every issue ends with a decision record committed alongside the code: `docs/decisions/<issue number, 4 digits>-<short-slug>.md` (update it if it already exists). Write it for someone who will never open the code. Only state what actually happened: don't list tests you didn't run, alternatives you didn't weigh, or edge cases you didn't check ("Not checked" is fine). Name code as `path::Name`. Aim for 600-1200 words; leave out a section only by saying why.
 
 ```
 # <NNNN>: <title>
