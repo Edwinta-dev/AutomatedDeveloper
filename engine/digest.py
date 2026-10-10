@@ -6,7 +6,8 @@ Writes <run dir>/DIGEST.md for a non-programmer steering the project: outcome, w
 needs their judgement (ranked), what was built, decisions by area, how to respond.
 
     python engine/digest.py --run <run-id | run-dir>
-    python engine/digest.py --latest [--project-repo SUBSTR]
+    python engine/digest.py --latest [--project-repo SUBSTR]   # all runs on the branch since
+                                                               # its last merge into the base
     python engine/digest.py --self-test
 
 Inputs: supervisor_state.json + attempt files (parsed by compare_runs.load_run),
@@ -189,6 +190,8 @@ class Digest:
     dep_blocked: dict
     window: tuple
     gaps: list
+    runs: list = field(default_factory=list)       # run ids covered (window mode)
+    since: str = ""                                # e.g. "origin/main (merge-base abc1234)"
 
 
 def gather(run_ref: str) -> Digest:
@@ -262,7 +265,136 @@ def gather(run_ref: str) -> Digest:
     return Digest(run=run, state=state, issues=views,
                   env_blockers=_dict_field(state, "env_blockers"),
                   dep_blocked=summary_dependency_blocks(summary),
-                  window=(start, end), gaps=gaps)
+                  window=(start, end), gaps=gaps, runs=[run.run_id])
+
+
+def _same_path(a: str, b: str) -> bool:
+    try:
+        return Path(a).resolve() == Path(b).resolve()
+    except OSError:
+        return False
+
+
+def runs_for(repo_path: str, branch: str, root: Optional[Path] = None) -> list:
+    """Run dirs whose state names this repo and branch, oldest first."""
+    root = root or cr.runs_root()
+    out = []
+    for sp in root.glob("*/supervisor_state.json") if root.exists() else []:
+        st = cr.load_json(sp) or {}
+        if st.get("branch") == branch and _same_path(st.get("repo_path") or "", repo_path):
+            out.append((cr.parse_iso(st.get("started_at")) or cr.mtime(sp), sp.parent))
+    out.sort(key=lambda x: (x[0] is None, x[0] or dt.datetime.min.replace(tzinfo=dt.timezone.utc)))
+    return [p for _, p in out]
+
+
+def branch_commits(repo: Path, base: str, branch: str) -> dict:
+    """issue -> (sha, subject, [files]) for commits in origin/<base>..<branch>; newest wins."""
+    rng = None
+    for b in (f"origin/{base}", base):
+        for ref in (branch, f"origin/{branch}"):
+            if cr.git_out(repo, "rev-parse", "--verify", "--quiet", b) is not None and \
+                    cr.git_out(repo, "rev-parse", "--verify", "--quiet", ref) is not None:
+                rng = f"{b}..{ref}"
+                break
+        if rng:
+            break
+    out = cr.git_out(repo, "log", rng, "--format=%H%x09%s%x09%b%x1e") if rng else None
+    found: dict = {}
+    for rec in (out or "").split("\x1e"):
+        parts = rec.strip().split("\t", 2)
+        if len(parts) < 2:
+            continue
+        text = "\n".join(parts[1:])
+        nums = [int(n) for n in cr.CLOSES_RE.findall(text)]
+        m = re.match(r"(?i)^issue #(\d+):", parts[1])
+        if m:
+            nums.append(int(m.group(1)))
+        for n in nums:
+            if n not in found:
+                files = (cr.git_out(repo, "diff-tree", "--no-commit-id", "--name-only", "-r",
+                                    parts[0]) or "").split()
+                found[n] = (parts[0], parts[1], files)
+    return found
+
+
+def gather_window(run_ref: str, root: Optional[Path] = None) -> Digest:
+    """All runs on the same repo+branch since the work branch was last merged into its base
+    (commits in origin/<base>..<branch>), merged into one digest. `run_ref` picks the
+    repo/branch/base (normally the latest run)."""
+    latest = gather(run_ref)
+    st = latest.state
+    repo_s, branch = st.get("repo_path") or "", st.get("branch") or ""
+    base = st.get("base_branch") or "main"
+    repo = Path(repo_s)
+    if not repo_s or not repo.is_dir() or not branch:
+        latest.gaps.append("repo/branch unknown: digest covers the latest run only")
+        return latest
+    mb = (cr.git_out(repo, "merge-base", f"origin/{base}", branch) or "").strip()
+    cutoff = cr.parse_iso((cr.git_out(repo, "show", "-s", "--format=%cI", mb) or "").strip()) \
+        if mb else None
+    def last_activity(p: Path):
+        mts = [cr.mtime(f) for f in p.iterdir() if f.is_file() and f.name != DIGEST_NAME]
+        mts = [x for x in mts if x]
+        return max(mts) if mts else None
+
+    # a run belongs to the window if it was still active after the base was last merged in
+    run_dirs = [p for p in runs_for(repo_s, branch, root)
+                if cutoff is None or (last_activity(p) or cutoff) >= cutoff
+                or p.resolve() == latest.run.path.resolve()]
+    digs = [gather(str(p)) for p in run_dirs] or [latest]
+    if not any(dg.run.path.resolve() == latest.run.path.resolve() for dg in digs):
+        digs.append(latest)
+    issues: dict = {}
+    env: dict = {}
+    deps: dict = {}
+    gaps: list = []
+    for dg in digs:                                # oldest -> newest: later runs override
+        env.update(dg.env_blockers)
+        deps.update(dg.dep_blocked)
+        gaps += dg.gaps
+        for n, v in dg.issues.items():
+            cur = issues.get(n)
+            if cur is None:
+                issues[n] = v
+                continue
+            cur.title = v.title or cur.title
+            cur.attempts += v.attempts
+            cur.vetoes += v.vetoes
+            cur.deferred_reason, cur.blocker = v.deferred_reason, v.blocker
+            cur.integ.update(v.integ)
+            cur.integ_paths.update(v.integ_paths)
+            cur.decision = v.decision or cur.decision
+    # committed = what is on the branch beyond the base, nothing else
+    commits = branch_commits(repo, base, branch)
+    recs = decisions_at_tip(repo, branch)
+    for v in issues.values():
+        v.committed = v.number in commits
+        if not v.committed:
+            v.sha = v.subject = ""
+            v.files = []
+    for n, (sha, subj, files) in commits.items():
+        v = issues.setdefault(n, IssueView(number=n))
+        v.sha, v.subject, v.files, v.committed, v.deferred_reason = sha, subj, files, True, ""
+        v.blocker = None
+        if not v.title:
+            v.title = re.sub(r"(?i)^issue #\d+:\s*", "", subj).strip()
+        if n in recs:
+            v.decision = parse_decision(recs[n][0], recs[n][1])
+    # an environment blocker that a later run got past is no longer news
+    env = {k: b for k, b in env.items()
+           if any(not issues.get(int(i), IssueView(0)).committed for i in b.get("issues") or [])}
+    deps = {n: d for n, d in deps.items() if not issues.get(n, IssueView(0)).committed}
+    starts = [dg.window[0] for dg in digs if dg.window[0]]
+    ends = [dg.window[1] for dg in digs if dg.window[1]]
+    run = latest.run
+    allruns = cr.Run(run_id=run.run_id, path=run.path, state=run.state)
+    for dg in digs:
+        for n, ir in dg.run.issues.items():
+            allruns.issues.setdefault((dg.run.run_id, n), ir)
+    return Digest(run=allruns, state=st, issues=issues, env_blockers=env, dep_blocked=deps,
+                  window=(min(starts) if starts else None, max(ends) if ends else None),
+                  gaps=list(dict.fromkeys(gaps)), runs=[dg.run.run_id for dg in digs],
+                  since=f"origin/{base}" + (f" (merge-base {mb[:8]})" if mb else ""))
 
 
 # ===========================================================================
@@ -372,10 +504,18 @@ def render(d: Digest) -> str:
         parts.append(f"{len(in_progress)} tried but not finished")
     if not_reached:
         parts.append(f"{len(not_reached)} not reached")
+    if len(d.runs) > 1 or d.since:
+        runs_line = (f"- **Runs covered ({len(d.runs)}):** "
+                     + ", ".join(f"`{r}`" for r in d.runs)
+                     + f"; latest {st.get('status', '?')}")
+        since = f" (work since {d.since})" if d.since else ""
+    else:
+        runs_line = f"- **Run:** `{d.run.run_id}` ({st.get('status', '?')})"
+        since = ""
     L = [f"# Run digest: {st.get('repo_name') or '?'}", "",
-         f"- **Branch:** `{st.get('branch', '?')}`, **Run:** `{d.run.run_id}` "
-         f"({st.get('status', '?')})",
-         f"- **Window:** {_fmt_time(d.window[0])} to {_fmt_time(d.window[1])}",
+         f"- **Branch:** `{st.get('branch', '?')}`",
+         runs_line,
+         f"- **Window:** {_fmt_time(d.window[0])} to {_fmt_time(d.window[1])}{since}",
          f"- **Outcome:** {'; '.join(parts)}.", ""]
 
     L += ["## Needs your attention", ""]
@@ -458,8 +598,10 @@ def cr_cell(s: str) -> str:
     return str(s or "").replace("|", "\\|").replace("\n", " ").strip()
 
 
-def write_digest(run_ref: str) -> Path:
-    d = gather(run_ref)
+def write_digest(run_ref: str, single: bool = True, root: Optional[Path] = None) -> Path:
+    """single: just this run; else every run on its repo+branch since the last merge into
+    the base branch (gather_window). Written to the given run's dir."""
+    d = gather(run_ref) if single else gather_window(run_ref, root)
     out = d.run.path / DIGEST_NAME
     out.write_text(render(d), encoding="utf-8")
     return out
@@ -495,8 +637,8 @@ def self_test() -> int:
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
-        repo, rd = tmp / "repo", tmp / "run"
-        repo.mkdir(); rd.mkdir(); (rd / "integrity").mkdir()
+        repo, rd = tmp / "repo", tmp / "runs" / "r1"
+        repo.mkdir(); rd.mkdir(parents=True); (rd / "integrity").mkdir()
 
         def g(*a):
             subprocess.run(["git", "-C", str(repo), *a], check=True, capture_output=True)
@@ -531,7 +673,9 @@ def self_test() -> int:
             (repo / code).write_text("x = 1\n")
             g("add", "."); g("commit", "-q", "-m", f"Issue {n} work\n\nCloses #{n}")
         started = (dt.datetime.now().astimezone() - dt.timedelta(hours=1)).isoformat()
+        g("update-ref", "refs/remotes/origin/main", "main")
         state = {"repo_path": str(repo), "repo_name": "me/robot", "branch": "automation/x",
+                 "base_branch": "main",
                  "run_dir": str(rd), "frozen_numbers": [1, 2, 3, 4],
                  "frozen_titles": {"1": "IMU reader", "2": "Motor limits", "3": "Camera",
                                    "4": "Docs"},
@@ -581,6 +725,30 @@ def self_test() -> int:
         check("cost footer", "4 attempt(s)" in text and "4,000" in text)
         check("revert hint", "git revert" in text)
         check("short", len(text.splitlines()) < 80)
+
+        # window mode: a later run that has done nothing must not hide r1's work
+        rd2 = tmp / "runs" / "r2"
+        rd2.mkdir()
+        later = (dt.datetime.now().astimezone() + dt.timedelta(minutes=1)).isoformat()
+        (rd2 / "supervisor_state.json").write_text(json.dumps(dict(
+            state, run_dir=str(rd2), started_at=later, status="running",
+            frozen_numbers=[3, 5], frozen_titles={"3": "Camera", "5": "Lidar"},
+            deferred={}, deferred_blockers={}, env_blockers={})), encoding="utf-8")
+        other = tmp / "runs" / "r0"                 # other branch: ignored
+        other.mkdir()
+        (other / "supervisor_state.json").write_text(json.dumps(dict(
+            state, branch="automation/y", frozen_numbers=[9])), encoding="utf-8")
+        single = write_digest(str(rd2)).read_text(encoding="utf-8")
+        check("--run single: only that run", "0 of 2 issues done" in single)
+        win = write_digest(str(rd2), single=False, root=tmp / "runs").read_text(encoding="utf-8")
+        check("window: both runs covered, header shows window",
+              "Runs covered (2):** `r1`, `r2`" in win and "work since origin/main" in win, )
+        check("window: committed issues = commits beyond origin/main",
+              "| #1 |" in win and "| #2 |" in win and "2 of 5 issues done" in win
+              and "#9" not in win)
+        check("window: earlier run's attempts/deferrals merged",
+              "#3 Camera was set aside" not in win or "opencv" in win)
+        check("window: cost covers all runs", "4 attempt(s)" in win)
     print("\n" + ("ALL DIGEST SELF-TESTS PASSED" if ok else "SOME DIGEST SELF-TESTS FAILED"))
     return 0 if ok else 1
 
@@ -592,8 +760,10 @@ def self_test() -> int:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Write <run dir>/DIGEST.md: a one-page run summary.")
     g = ap.add_mutually_exclusive_group(required=True)
-    g.add_argument("--run", help="run id (under the runs root) or run directory")
-    g.add_argument("--latest", action="store_true", help="most recent run")
+    g.add_argument("--run", help="run id (under the runs root) or run directory: that run only")
+    g.add_argument("--latest", action="store_true",
+                   help="all runs on the latest run's repo+branch since its last merge into "
+                        "the base branch")
     g.add_argument("--self-test", action="store_true")
     ap.add_argument("--project-repo", help="with --latest: substring of the repo name/path")
     ap.add_argument("--print", action="store_true", help="also print the digest")
@@ -601,13 +771,14 @@ def main(argv=None) -> int:
     if a.self_test:
         return self_test()
     ref = a.run
+    single = not a.latest
     if a.latest:
         p = latest_run(a.project_repo)
         if p is None:
             print("no matching run found", file=sys.stderr)
             return 1
         ref = str(p)
-    out = write_digest(ref)
+    out = write_digest(ref, single=single)
     if a.print:
         print(out.read_text(encoding="utf-8"))
     print(f"Digest: {out}")

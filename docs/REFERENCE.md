@@ -218,7 +218,7 @@ The gate is deliberately independent of the runner: it lives in `integrity/` at 
 
 `integrity/integrity.py record` checks the issue's [decision record](DECISION_RECORDS.md) (`docs/decisions/NNNN-slug.md`). It runs after the dangling reference check and before the adversary, appends a tool-generated **Verified facts** block to the record, and compares the rationale with the diff.
 
-- **Config** (`record` section): `mode` is `enforce` (the template default) or `report`. `dir` is where records live (default `docs/decisions`). `required_sections` lists the headings every record must have (default: the sections of the [format](DECISION_RECORDS.md#the-rationale-format)). `min_words` (default 150) and `max_words` (default 2000) bound the rationale's length.
+- **Config** (`record` section): `mode` is `enforce` (the template default) or `report`. `dir` is where records live (default `docs/decisions`). `required_sections` lists the headings every record must have (default: the sections of the [format](DECISION_RECORDS.md#the-rationale-format)). `min_words` (default 150) and `max_words` (default 3000) bound the rationale's length.
 - **ERRORs** (no record, missing sections, a bad `Status:`) fail the gate in `enforce` mode. **WARNs** (unmentioned changes or removals, references to components that don't exist, unexplained out-of-scope changes, tests that don't exist) never fail it. They are written into the facts block for the reader and the adversary.
 - **Exit codes:** 0 pass, report mode, or warnings only; 1 an ERROR in `enforce` mode; 2 misconfigured (bad config, not a git repo).
 - **Records** go to `<run dir>/integrity/record_issue-<N>_attempt-<K>.json`.

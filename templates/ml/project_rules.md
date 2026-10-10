@@ -40,11 +40,12 @@ Status: implemented | partial | blocked · Issue: #<N> · Date: <YYYY-MM-DD>
 ## Approach             (how it works, plainly; name components as path::Name)
 ## Alternatives considered   (table: option | why not chosen; or "None considered")
 ## Trade-offs           (what this gives up, and when that would start to matter)
+## Key parameters       (every threshold, constant, default or limit you chose: value, how chosen, effect of raising/lowering; "None" if no tunable values)
 ## Assumptions          (what was taken as true, and what breaks if it isn't)
-## Edge cases           (handled / not handled + the symptom someone would see)
+## Edge cases           (handled / not handled; give the symptom a user would see)
 ## Changes outside the scope (same as SCOPE_NOTES)
 ## How it was verified  (tests run or added; what remains untested)
-## To change this       (the levers for a different trade-off; likely bug sources)
+## To change this       (concrete options as "to favour X, change Y from A to B; cost: Z"; likely bug sources)
 ## Rollback             (what depends on this; what to check if reverted)
 ```
 

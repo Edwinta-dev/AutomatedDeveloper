@@ -70,12 +70,19 @@ How it works, in plain language. Name the parts of the code as `path::Name`
 What this approach gives up (speed, simplicity, flexibility, accuracy, cost) and the
 situation in which that would start to matter.
 
+## Key parameters
+| Parameter | Value | How chosen | Raise it / lower it |
+|---|---|---|---|
+| `path::NAME` | 50 mm | ... | higher: fewer, later alerts; lower: more false alarms |
+Every threshold, constant, default or limit chosen in this change. Write "None" if there
+are no tunable values.
+
 ## Assumptions
 - What was taken as true without checking, why, and what goes wrong if it isn't.
 
 ## Edge cases
 - Handled: ...
-- Not handled: ... and the symptom someone would see if it happens.
+- Not handled: ... and the symptom a user would see if it happens.
 
 ## Changes outside the scope
 Each change outside the issue's **Scope:** line and why it was needed (the same as SCOPE_NOTES).
@@ -84,11 +91,16 @@ Each change outside the issue's **Scope:** line and why it was needed (the same 
 Tests run or added, what they show, and what remains untested.
 
 ## To change this
-The levers: "to favour X over Y, change `path::Name`"; the likeliest places for a bug to come from.
+Concrete options: "to favour X, change Y from A to B; cost: Z". Then the likeliest places
+for a bug to come from.
 
 ## Rollback
 What depends on this change, and what to check if it's reverted.
 ```
+
+**Why Key parameters:** the numbers are where most trade-offs actually live. Listing each one
+with its value, its origin and what moving it does lets a non-programmer weigh and retune
+the trade-offs without reading the code.
 
 **Length:** aim for 300–700 words. A small issue can leave sections out, but should say so ("No assumptions beyond the issue text").
 
