@@ -13,7 +13,7 @@ TODO: the project's non-negotiable rules, one bullet each. For example: the stac
 
 ## Decision record
 
-Every issue ends with a decision record committed alongside the code: `docs/decisions/<issue number, 4 digits>-<short-slug>.md` (update it if it already exists). Records are claims to check against the code, not proof: write them so a later agent can test each claim quickly. Only state what actually happened: don't list tests you didn't run, alternatives you didn't weigh, or edge cases you didn't check; put anything you believe but did not test or measure under Not verified. Name code as `path::Name`. Every numeric or timing claim cites its source, a constant `path::NAME` or a config key, e.g. "resyncs every ~2 h (`fw/config.h::RESYNC_EVERY` x `CYCLE_S`)". Do not restate what the code comments already say. Aim for 500-800 words (150-1500 accepted); leave out a section only by saying why ("None found" is fine).
+Every issue ends with a decision record committed alongside the code: `docs/decisions/<issue number, 4 digits>-<short-slug>.md` (update it if it already exists). Records are claims to check against the code, not proof: write them so a later agent can test each claim quickly. Only state what actually happened: don't list tests you didn't run, alternatives you didn't weigh, or edge cases you didn't check; put anything you believe but did not test or measure under Not verified. Name code as `path::Name`. Every numeric or timing claim cites its source, a constant `path::NAME` or a config key, e.g. "resyncs every ~2 h (`fw/config.h::RESYNC_EVERY` x `CYCLE_S`)". Do not restate what the code comments already say. Aim for 600-1200 words (150-2000 accepted); leave out a section only by saying why ("None found" is fine). A change that breaks or degrades existing behaviour goes under Breaks or needs follow-up, not under Trade-offs; file or describe the follow-up. Do not mark your own claims [checked] or [tested]: the tool sets evidence levels.
 
 ```
 # <NNNN>: <title>
@@ -28,6 +28,7 @@ Status: implemented | partial | blocked · Issue: #<N> · Date: <YYYY-MM-DD>
 ## Assumptions          (what was taken as true, and what breaks if it isn't)
 ## Edge cases           (- Handled: ... / - Not handled: ... with the symptom a user would see)
 ## Not verified         (claims or behaviours you did not test or measure; "None")
+## Breaks or needs follow-up (existing behaviour this change breaks or degrades - an app or caller that no longer works, a removed field, a migration someone must run - each with the follow-up filed or described; "None")
 ## Changes outside the scope (same as SCOPE_NOTES)
 ## How it was verified  (tests run or added, with names)
 ## To change this       (concrete options as "to favour X, change Y from A to B; cost: Z"; likely bug sources)
