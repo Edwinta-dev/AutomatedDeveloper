@@ -188,7 +188,15 @@ def _bullets(body: str) -> list[str]:
             items.append(line.rstrip())
         else:
             items[-1] += "\n" + line.rstrip()
-    out = [x for x in items if x.strip() and not re.fullmatch(r"\|[\s|:\-]*\|?", x.strip())]
+    sep = re.compile(r"\|[\s|:\-]*\|?")
+    out = []
+    for i, x in enumerate(items):
+        if not x.strip() or sep.fullmatch(x.strip()):
+            continue
+        nxt = items[i + 1].strip() if i + 1 < len(items) else ""
+        if x.lstrip().startswith("|") and nxt and sep.fullmatch(nxt):
+            continue                                  # a table's header row
+        out.append(x)
     return out
 
 
@@ -223,9 +231,10 @@ def brief(repo: Path, *, targets: list[tuple[str, Optional[str]]], mode: str,
     budget = max_words - len(HEADER.split())
     used = 0
     truncated = False
+    blocks = []
     for r in matched:
         head = f"### {r['title']} ({r['path']}" + (f", {r['status']}" if r["status"] else "") + ")"
-        block: list[str] = []
+        block: list[tuple[str, str]] = []           # (section label, item)
         for name in MODES[mode]:
             sec = find_section(r["parsed"], name)
             if sec is None:
@@ -237,31 +246,53 @@ def brief(repo: Path, *, targets: list[tuple[str, Optional[str]]], mode: str,
                     r"^[-*]?\s*(none|n/?a|not applicable)\b", items[0].strip(), re.I)
                     and len(items[0].split()) <= 6):
                 continue
-            block.append(f"**{LABELS.get(name, name)}**")
-            block += items
+            block += [(LABELS.get(name, name), x) for x in items]
         if mode == "debug" and find_section(r["parsed"], "Not verified") is None:
             ver = find_section(r["parsed"], "How it was verified")   # v1: inline claims
             nv = [x for x in _bullets(ver[1]) if UNVERIFIED_RE.search(x)] if ver else []
-            if nv:
-                block += ["**Not verified (from How it was verified)**"] + nv
-        if not block:
-            continue
-        hw = len(head.split())
-        if used + hw + len(block[0].split()) + len(block[1].split()) > budget:
+            block += [("Not verified (from How it was verified)", x) for x in nv]
+        if block:
+            blocks.append((head, block))
+    # Share the budget between records (newest first); words a record leaves unused
+    # carry over to the next one, so one long record cannot crowd out the rest.
+    left = budget
+    for k, (head, block) in enumerate(blocks):
+        share = max(left // (len(blocks) - k), 40)
+        cap = min(share, left)
+        # pick items round-robin across sections (each section's first item, then each
+        # one's second, ...) so every section is represented, then print them grouped
+        by_sec: dict = {}
+        for lab, item in block:
+            by_sec.setdefault(lab, []).append(item)
+        order = []
+        depth = 0
+        while any(depth < len(v) for v in by_sec.values()):
+            order += [(lab, depth) for lab, v in by_sec.items() if depth < len(v)]
+            depth += 1
+        w_used = len(head.split())
+        keep: set = set()
+        for lab, i in order:
+            w = len(by_sec[lab][i].split()) + (len(lab.split()) if not any(
+                x[0] == lab for x in keep) else 0)
+            if w_used + w <= cap:
+                keep.add((lab, i))
+                w_used += w
+        dropped = len(block) - len(keep)
+        out = [head]
+        for lab, items in by_sec.items():
+            idx = [i for i in range(len(items)) if (lab, i) in keep]
+            if idx:
+                out.append(f"**{lab}**")
+                out += [items[i] for i in idx]
+        if len(out) == 1:
             truncated = True
-            break
-        lines += [head]
-        used += hw
-        for item in block:
-            w = len(item.split())
-            if used + w > budget:
-                truncated = True
-                break
-            lines.append(item)
-            used += w
-        lines.append("")
-        if truncated:
-            break
+            continue
+        if dropped:
+            truncated = True
+            out.append(f"(+{dropped} more item(s) in the record)")
+        lines += out + [""]
+        used += w_used
+        left -= w_used
     if len(lines) == 2 and not truncated:
         return "", matched
     if truncated:
