@@ -12,6 +12,7 @@ The [README](../README.md) covers everyday use. This page is the detail behind i
 - [Scope gate](#scope-gate)
 - [Dangling reference check](#dangling-reference-check)
 - [Decision record check](#decision-record-check)
+- [Decision record brief](#decision-record-brief)
 - [Environment blockers](#environment-blockers)
 - [Environment preflight](#environment-preflight)
 - [Run digest](#run-digest)
@@ -226,11 +227,27 @@ The gate is deliberately independent of the runner: it lives in `integrity/` at 
 
 `integrity/integrity.py record` checks the issue's [decision record](DECISION_RECORDS.md) (`docs/decisions/NNNN-slug.md`). It runs after the dangling reference check and before the adversary, appends a tool-generated **Verified facts** block to the record, and compares the rationale with the diff.
 
-- **Config** (`record` section): `mode` is `enforce` (the template default) or `report`. `dir` is where records live (default `docs/decisions`). `required_sections` lists the headings every record must have (default: the sections of the [format](DECISION_RECORDS.md#the-rationale-format)). `min_words` (default 150) and `max_words` (default 3000) bound the rationale's length.
-- **ERRORs** (no record, missing sections, a bad `Status:`) fail the gate in `enforce` mode. **WARNs** (unmentioned changes or removals, references to components that don't exist, unexplained out-of-scope changes, tests that don't exist) never fail it. They are written into the facts block for the reader and the adversary.
+- **Config** (`record` section): `mode` is `enforce` (the template default) or `report`. `dir` is where records live (default `docs/decisions`). `required_sections` lists the headings every record must have (default: the v2 sections of the [format](DECISION_RECORDS.md#the-rationale-format-v2): In short, Traps, Components, Problem and constraints, Alternatives considered, Trade-offs, Key parameters, Assumptions, Edge cases, Not verified, Changes outside the scope, How it was verified, To change this, Rollback). `min_words` (default 150) and `max_words` (default 1500) bound the rationale's length.
+- **v1 records** (an `## Approach` heading and no `## Components`, or dated before 2026-10-12) are checked against the v1 section list with a 3000-word limit and get one INFO "v1 record"; the new sections never ERROR on them.
+- **ERRORs** (no record, missing sections, a bad `Status:`) fail the gate in `enforce` mode. **WARNs** never fail it: unmentioned public components (private helpers and changes of 5 lines or fewer are skipped; a named folder covers its files), references to files or components that don't exist (URL-like references are ignored), removed symbols that are still referenced and not mentioned, unexplained out-of-scope changes, tests that don't exist, and numeric claims that clearly contradict a cited single-literal constant. Each cited constant next to a number also gets an INFO "claim cites NAME = value".
+- **Facts block:** change summary by area, new/deleted files, removed symbols, scope, checks passed, at most 10 warnings. The full findings, the claims and the coverage are in the JSON record.
 - **Exit codes:** 0 pass, report mode, or warnings only; 1 an ERROR in `enforce` mode; 2 misconfigured (bad config, not a git repo).
 - **Records** go to `<run dir>/integrity/record_issue-<N>_attempt-<K>.json`.
 - `--commit <sha>` checks the record of a past commit.
+
+## Decision record brief
+
+`integrity/integrity.py brief` prints slices of earlier decision records for the components a task touches, as hypotheses to check (see [DECISION_RECORDS.md](DECISION_RECORDS.md#record-slices-for-agents-integrity-brief)).
+
+```
+python integrity/integrity.py brief --repo R (--components "a.py::f, b/**" | --issue-file F | --paths p1 p2)
+                                    --mode debug|feature [--max-words 600] [--ref <branch>] [--config C]
+```
+
+- `--issue-file` takes the components from the issue's **Scope:** line. `--ref` reads records and code at a branch or commit (default: the working tree). `--config` supplies `record.dir`.
+- **debug:** Traps, Assumptions, Edge cases (Not handled only), Key parameters, Not verified. **feature:** Traps, Alternatives considered, Trade-offs, To change this. Newest record first, cut to `--max-words` on whole bullets.
+- **Exit codes:** 0 (empty output when no record matches), 2 misconfigured.
+- **Runner:** with `"brief": {"enabled": true, "mode": "auto", "max_words": 600}` in the project config, the runner runs it before each attempt on an issue with a **Scope:** line and inserts the output just after the issue text. `mode: auto` picks debug when the issue title or labels contain bug, fix or regression, else feature; `debug` / `feature` force one. It runs as a subprocess; any failure skips the brief with one log line.
 
 ## Environment blockers
 
@@ -274,7 +291,7 @@ If any fails (non-zero exit, timeout, or the executable is missing), the run sto
 
 ## Run digest
 
-At the end of every run the runner writes `DIGEST.md` into the run dir and prints its path: one page for a person coming back to an unattended run. It lists, in order: the outcome; **what needs your attention** (environment blockers, set-aside issues with the reason and what to do, issues waiting on dependencies, and committed issues whose decision record or integrity checks flag something: partial/blocked status, consistency warnings, unexplained out-of-scope changes, unverified changes, removed symbols, reviewer vetoes, checks the runner's validation SKIPped, config files that changed mid-run, "Not handled" edge cases and assumptions); **what was built** (one row per committed issue with the record's "In short", trade-off, record path and commit); decisions grouped by component tag (or top-level folder); how to respond; tokens and data gaps. Runs that predate decision or integrity records still get a digest, with the gaps stated.
+At the end of every run the runner writes `DIGEST.md` into the run dir and prints its path: one page for a person coming back to an unattended run. It lists, in order: the outcome; **what needs your attention**, ranked: environment/preflight blockers and config files that changed mid-run, set-aside issues (with the reason and what to do) and issues waiting on dependencies, committed issues whose record is partial/blocked or whose checks flag something (unexplained out-of-scope changes, unverified changes, removed symbols still referenced, reviewer vetoes, validation SKIPs), then each record's Not verified items, Not handled edge cases and Assumptions. Consistency warnings do not rank; **what was built** shows one row per committed issue with the record's "In short", trade-off, the checks that passed, the warning count, record path and commit; then decisions grouped by component tag (or top-level folder); how to respond; tokens and data gaps. Runs that predate decision or integrity records still get a digest, with the gaps stated.
 
 ```
 python v2.py digest <Project>                       # latest run of that project's repo

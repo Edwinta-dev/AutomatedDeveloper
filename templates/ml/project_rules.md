@@ -30,23 +30,25 @@ Also save validation predictions to `results/val_predictions.csv`, so the gate c
 
 ## Decision record
 
-Every issue ends with a decision record committed alongside the code: `docs/decisions/<issue number, 4 digits>-<short-slug>.md` (update it if it already exists). Write it for someone who will never open the code. Only state what actually happened: don't list tests you didn't run, alternatives you didn't weigh, or edge cases you didn't check ("Not checked" is fine). Name code as `path::Name`. Aim for 600-1200 words; leave out a section only by saying why.
+Every issue ends with a decision record committed alongside the code: `docs/decisions/<issue number, 4 digits>-<short-slug>.md` (update it if it already exists). Records are claims to check against the code, not proof: write them so a later agent can test each claim quickly. Only state what actually happened: don't list tests you didn't run, alternatives you didn't weigh, or edge cases you didn't check; put anything you believe but did not test or measure under Not verified. Name code as `path::Name`. Every numeric or timing claim cites its source, a constant `path::NAME` or a config key, e.g. "resyncs every ~2 h (`fw/config.h::RESYNC_EVERY` x `CYCLE_S`)". Do not restate what the code comments already say. Aim for 500-800 words (150-1500 accepted); leave out a section only by saying why ("None found" is fine).
 
 ```
 # <NNNN>: <title>
 Status: implemented | partial | blocked · Issue: #<N> · Date: <YYYY-MM-DD>
 ## In short            (2-3 plain sentences: what exists now that didn't before)
+## Traps: why the obvious fix is wrong   (non-obvious constraints a later agent might "simplify" back into a bug, each with its reason; or "None found")
+## Components           (bullets, one per line: `path::Name` - its role in this change)
 ## Problem and constraints
-## Approach             (how it works, plainly; name components as path::Name)
-## Alternatives considered   (table: option | why not chosen; or "None considered")
+## Alternatives considered   (option - why not chosen; or "None considered")
 ## Trade-offs           (what this gives up, and when that would start to matter)
-## Key parameters       (every threshold, constant, default or limit you chose: value, how chosen, effect of raising/lowering; "None" if no tunable values)
+## Key parameters       (each threshold/constant/default: value with its source `path::NAME`, how chosen, effect of raising/lowering; "None")
 ## Assumptions          (what was taken as true, and what breaks if it isn't)
-## Edge cases           (handled / not handled; give the symptom a user would see)
+## Edge cases           (- Handled: ... / - Not handled: ... with the symptom a user would see)
+## Not verified         (claims or behaviours you did not test or measure; "None")
 ## Changes outside the scope (same as SCOPE_NOTES)
-## How it was verified  (tests run or added; what remains untested)
+## How it was verified  (tests run or added, with names)
 ## To change this       (concrete options as "to favour X, change Y from A to B; cost: Z"; likely bug sources)
 ## Rollback             (what depends on this; what to check if reverted)
 ```
 
-For an experiment, Approach states the hypothesis, and How it was verified gives the result against the frozen eval, including negative results.
+For an experiment, In short states the hypothesis, and How it was verified gives the result against the frozen eval, including negative results.
