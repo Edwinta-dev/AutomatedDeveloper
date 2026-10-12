@@ -907,6 +907,8 @@ def self_test() -> int:
     refs.self_test(check, __file__)
     import record                                  # decision record check (record.py)
     record.self_test(check, __file__)
+    import brief                                   # decision record slices (brief.py)
+    brief.self_test(check, __file__)
     print("\n" + ("ALL INTEGRITY SELF-TESTS PASSED" if ok else "SOME INTEGRITY SELF-TESTS FAILED"))
     return 0 if ok else 1
 
@@ -965,6 +967,29 @@ def cmd_record(args) -> int:
     return rc
 
 
+def cmd_brief(args) -> int:
+    import brief
+    import record
+    try:
+        issue_text = _read(args.issue_file) if args.issue_file else None
+        if args.issue_file and not Path(args.issue_file).is_file():
+            raise ValueError(f"issue file not found: {args.issue_file}")
+        targets = brief.targets_from(args.components, issue_text, args.paths)
+        if not targets:
+            raise ValueError("no components: pass --components, --issue-file or --paths")
+        rdir = record.load_config(Path(args.config).expanduser() if args.config else None)["dir"]
+        text, _ = brief.brief(Path(args.repo).expanduser(), targets=targets, mode=args.mode,
+                              max_words=args.max_words, ref=args.ref, record_dir=rdir)
+    except (GitError, ValueError, OSError, json.JSONDecodeError) as exc:
+        print(f"BRIEF: MISCONFIGURED - {exc}", file=sys.stderr)
+        return MISCONFIGURED
+    if text:
+        sys.stdout.flush()
+        sys.stdout.buffer.write(text.encode("utf-8"))   # UTF-8 whatever the console code page
+        sys.stdout.flush()
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="integrity", description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd")
@@ -1021,6 +1046,19 @@ def main(argv=None) -> int:
     rc_.add_argument("--commit", help="check <sha>^..<sha>; never writes, prints the facts")
     rc_.add_argument("--no-write", action="store_true", help="do not write the facts block")
 
+    br = sub.add_parser("brief", help="slices of earlier decision records for given components "
+                                      "(hypotheses to check, not proof)")
+    br.add_argument("--repo", default=".", help="target repo (default: cwd)")
+    src = br.add_mutually_exclusive_group(required=True)
+    src.add_argument("--components", help='e.g. "a.py::f, b/**"')
+    src.add_argument("--issue-file", help="issue text; its **Scope:** line gives the components")
+    src.add_argument("--paths", nargs="+", help="file or folder paths")
+    br.add_argument("--mode", choices=["debug", "feature"], required=True)
+    br.add_argument("--max-words", type=int, default=600)
+    br.add_argument("--ref", help="read records and code at this branch/commit "
+                                  "(default: working tree)")
+    br.add_argument("--config", help='project config JSON; its "record.dir" is used')
+
     sub.add_parser("self-test", help="offline self-tests in temp git repos")
     args = ap.parse_args(argv)
     for stream in (sys.stdout, sys.stderr):
@@ -1032,7 +1070,7 @@ def main(argv=None) -> int:
         ap.print_help()
         return MISCONFIGURED
     return {"gate": cmd_gate, "index": cmd_index, "lookup": cmd_lookup, "bench": cmd_bench, "refs": cmd_refs,
-            "record": cmd_record, "self-test": lambda _a: self_test()}[args.cmd](args)
+            "record": cmd_record, "brief": cmd_brief, "self-test": lambda _a: self_test()}[args.cmd](args)
 
 
 if __name__ == "__main__":
