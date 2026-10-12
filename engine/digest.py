@@ -113,6 +113,21 @@ def _short(text: str, limit: int = 220) -> str:
     return t if len(t) <= limit else t[: limit - 1].rstrip() + "..."
 
 
+def main_choice_summary(text: str, limit: int = 200) -> str:
+    """First sentence(s) of a record's Main design choice, up to `limit` chars (about two
+    table lines); '' when the section is absent or waived (older records)."""
+    t = " ".join(re.sub(r"(?m)^\s*(?:[-*+]|\d+[.)])\s+", "", text or "").split())
+    t = t.replace("**", "")
+    if not t or re.match(r"(?i)^(none|n/?a|not applicable)\b", t):
+        return ""
+    out = ""
+    for s in re.split(r"(?<=[.!?])\s+", t):
+        if out and len(out) + 1 + len(s) > limit:
+            break
+        out = f"{out} {s}".strip()
+    return _short(out, limit)
+
+
 def _dict_field(state: dict, key: str) -> dict:
     v = state.get(key)
     if isinstance(v, str):          # tolerate stringified dicts in odd states
@@ -616,6 +631,9 @@ def render(d: Digest) -> str:
             if not short:
                 subj = re.sub(r"(?i)^issue #\d+:\s*", "", v.subject or "").strip()
                 short = "(no record)" if not subj or subj == v.title else f"(no record) {subj}"
+            choice = main_choice_summary(dec.section("main design choice")) if dec else ""
+            if choice:
+                short = f"{cr_cell(short)}<br>**Choice:** {cr_cell(choice)}"
             trade = _first_line(dec.section("trade-off"), 140) if dec else ""
             rj = v.integ.get("record") or {}
             checks = ", ".join(rj.get("gates_passed") or []) or (dec.checks if dec else "")
@@ -743,6 +761,11 @@ def self_test() -> int:
                   "<!-- verified-facts:end -->\n")
         rec1 = ("# 0001: IMU reader\n\nStatus: partial · Issue: #1 · Date: 2026-10-09\n\n"
                 "## In short\nThe robot now reads its tilt sensor ten times a second.\n\n"
+                "## How it works\n1. A timer wakes the reader.\n\n"
+                "## Main design choice\nPolling at 10 Hz rather than interrupts. The board's "
+                "interrupt pin is shared with the motor driver. Interrupts would win on a "
+                "board with a free pin, and a much longer third sentence that must not appear "
+                "in the digest because it goes past the limit of two table lines.\n\n"
                 "## Trade-offs\nPolling is simpler than interrupts but wastes some power.\n\n"
                 "## Assumptions\n- The sensor is always on the I2C bus at address 0x68.\n\n"
                 "## Edge cases\n- Handled: sensor unplugged at start.\n"
@@ -814,6 +837,17 @@ def self_test() -> int:
               all(s in att for s in ("**partial**", "outside the issue's scope",
                                      "2 thing(s) removed, 1 still referenced", "vetoed 1"))
               and "consistency warning" not in att)
+        row1 = next((x for x in text.splitlines() if x.startswith("| #1 ")), "")
+        row2 = next((x for x in text.splitlines() if x.startswith("| #2 ")), "")
+        check("What was built: In short + first sentences of Main design choice",
+              "ten times a second.<br>**Choice:** Polling at 10 Hz rather than interrupts. "
+              "The board's interrupt pin is shared with the motor driver." in row1
+              and "third sentence" not in row1 and "timer wakes" not in text)
+        check("What was built: older record without Main design choice falls back to In short",
+              "Motors now stop at a safe speed limit." in row2 and "Choice:" not in row2)
+        check("main_choice_summary: waiver/absent -> empty",
+              main_choice_summary("None.") == "" and main_choice_summary("") == ""
+              and main_choice_summary("- **X** over Y: cheaper.") == "X over Y: cheaper.")
         check("warning count + evidence columns + checks passed",
               "| Checks passed | Evidence (checked/tested/claimed) | Warn |" in text
               and "| tests, record | 3/1/7 | 1 |" in text)

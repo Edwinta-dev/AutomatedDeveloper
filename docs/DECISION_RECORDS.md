@@ -83,10 +83,20 @@ Problems come in two levels:
 ```markdown
 # 0066: Appointments model rewrite
 
-Status: implemented | partial | blocked · Issue: #66 · Date: 2026-10-12
+Status: implemented | partial | blocked · Issue: #66 · Date: 2026-10-13
 
 ## In short
 Two or three sentences a non-programmer can follow: what exists now that didn't before.
+
+## How it works
+For people, 100-200 words: the whole pipeline end to end as numbered plain-language steps
+("1. Each night the server takes the day's photos. 2. ..."). No function names, no `code`:
+those belong in Components.
+
+## Main design choice
+The key decision, the 1-2 alternatives that were seriously possible, why this one won, and
+what would make the other one better. E.g. "Slot lookup rather than id lookup: the clinic
+rebooks by slot... Id lookup would win if slots could overlap."
 
 ## Traps: why the obvious fix is wrong
 - Non-obvious constraints a later agent might "simplify" back into a bug, each with its
@@ -94,16 +104,22 @@ Two or three sentences a non-programmer can follow: what exists now that didn't 
   so (device, cycle_seq) alone collides." Write "None found" if there are none.
 
 ## Components
-- `clinic-base/models/appointments.php::find_appointment` - looks up by slot, not id.
-- `clinic-base/api/routes.php::book` - validates and calls find_appointment.
-(One line per component on its role. This replaces the old Approach prose: the code and
-its comments say *how*; the record says *which parts* and *why*.)
+- `clinic-base/models/appointments.php::find_appointment` - lookup by slot.
+- `clinic-base/api/routes.php::book` - validates, books.
+(A reference list for agents: `path::Name` and a few words, no prose. How it works carries
+the explanation for people.)
+
+## Breaks or needs follow-up
+- Existing behaviour this change breaks or degrades, with the follow-up filed or described
+  (e.g. "The app still reads `current_green_ratio`; its algae chart is wrong until it reads
+  `current_gcc` - follow-up #95"). "None" if nothing breaks. Not under Trade-offs.
 
 ## Problem and constraints
 What the issue required, and what limited the options.
 
 ## Alternatives considered
-- Option - why not chosen. ("None considered" if that's the truth.)
+- Other, smaller choices: option - why not chosen. ("None considered" if that's the truth.)
+  The main one goes under Main design choice.
 
 ## Trade-offs
 What this approach gives up, and the situation in which that would start to matter.
@@ -123,11 +139,6 @@ What this approach gives up, and the situation in which that would start to matt
 - Claims or behaviours not tested or measured (e.g. "deep-sleep clock drift was not
   measured"; "resync interval inferred from constants, not observed").
 
-## Breaks or needs follow-up
-- Existing behaviour this change breaks or degrades, with the follow-up filed or described
-  (e.g. "The app still reads `current_green_ratio`; its algae chart is wrong until it reads
-  `current_gcc` - follow-up #95"). "None" if nothing breaks. Not under Trade-offs.
-
 ## Changes outside the scope
 Each change outside the issue's **Scope:** line and why (the same as SCOPE_NOTES).
 
@@ -144,7 +155,17 @@ What depends on this change, and what to check if it's reverted.
 
 **Every numeric or timing claim cites its source**, a constant `path::NAME` or a config key: "resyncs every ~2 h (`fw/config.h::RESYNC_EVERY` × `CYCLE_S`)". In the OutdoorKoi records, "resyncs about hourly" was actually about 2 hours from the cycle constants; a citation makes such errors checkable.
 
-**Length:** aim for 600–1200 words (150–2000 accepted; about 1,300 words was fine in review). Leave a section empty only by saying why ("None found").
+**Length:** aim for 600–1200 words (150–2000 accepted; about 1,300 words was fine in review). How it works and Main design choice are paid for by keeping Components to a few words per line and Traps to the real ones. Leave a section empty only by saying why ("None found").
+
+**Who reads what.**
+
+| Reader | Reads | For |
+|---|---|---|
+| A person jumping in | In short, How it works, Main design choice (the digest shows In short + the first sentences of Main design choice) | what exists, how it works end to end, and the one decision worth arguing about |
+| An agent jumping back in | Main design choice, Traps, Components, Breaks, Not verified, Key parameters (the brief: never How it works) | what not to re-argue or "simplify", where the code is, what is untested |
+| A reviewer | Trade-offs, Alternatives considered, Edge cases, How it was verified, Verified facts | whether the claims hold |
+
+**Human layer (records dated 2026-10-13 or later).** How it works and Main design choice are required from that date; older records without them get no error. v2 had dropped the Approach prose because an agent reviewer found it duplicated code comments; in the #92 review a person found a 1,268-word record that never said how the pipeline worked end to end or argued its main decision. Two WARNs keep the sections honest: How it works with more than two code references (`path::Name` or backticked identifiers), and a Main design choice that names no alternative ("rather than", "instead of", "over", "vs", "alternative", "considered", "rejected", ...).
 
 **v1 records.** Records with an `## Approach` heading and no `## Components`, or dated before 2026-10-12, are checked against the v1 section list (In short, Problem and constraints, Approach, Alternatives, Trade-offs, Key parameters, Assumptions, Edge cases, Changes outside the scope, How it was verified, To change this, Rollback; up to 3000 words). They get one INFO "v1 record" and no ERROR for the new sections.
 
@@ -174,8 +195,8 @@ Sections per mode:
 
 | Mode | Sections |
 |---|---|
-| `debug` | Traps, Assumptions, Edge cases (Not handled only), Key parameters, Not verified |
-| `feature` | Traps, Alternatives considered, Trade-offs, To change this |
+| `debug` | Traps, Main design choice, Assumptions, Edge cases (Not handled only), Key parameters, Not verified |
+| `feature` | Traps, Main design choice, Alternatives considered, Trade-offs, To change this |
 
 The output starts with "Hypotheses from earlier decision records — check them against the code; they are not proof." and is cut to `--max-words` on whole bullets. v1 records contribute what they have; in debug mode their "Not verified" lines are taken from How it was verified.
 

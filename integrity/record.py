@@ -44,14 +44,24 @@ V1_SECTIONS = ["In short", "Problem and constraints", "Approach", "Alternatives 
                "Trade-offs", "Key parameters", "Assumptions", "Edge cases",
                "Changes outside the scope", "How it was verified", "To change this", "Rollback"]
 # v2 (2026-10-12): Traps, Components (replaces Approach prose) and Not verified.
-DEFAULT_SECTIONS = ["In short", "Traps", "Components", "Problem and constraints",
+# human layer (2026-10-13): How it works (for people) and Main design choice (for both).
+DEFAULT_SECTIONS = ["In short", "How it works", "Main design choice", "Traps", "Components",
+                    "Breaks or needs follow-up", "Problem and constraints",
                     "Alternatives considered", "Trade-offs", "Key parameters", "Assumptions",
-                    "Edge cases", "Not verified", "Breaks or needs follow-up",
-                    "Changes outside the scope", "How it was verified", "To change this",
-                    "Rollback"]
+                    "Edge cases", "Not verified", "Changes outside the scope",
+                    "How it was verified", "To change this", "Rollback"]
 BREAKS = "Breaks or needs follow-up"
-V2_ONLY = ("Traps", "Components", "Not verified", BREAKS)
+HOW = "How it works"
+MAIN = "Main design choice"
+HUMAN_SECTIONS = (HOW, MAIN)
+V2_ONLY = ("Traps", "Components", "Not verified", BREAKS) + HUMAN_SECTIONS
 BREAKS_DATE = "2026-10-13"        # v2 records dated before this may lack BREAKS (WARN only)
+HUMAN_DATE = "2026-10-13"         # records dated before this may lack HUMAN_SECTIONS (no error)
+HOW_MAX_CODE = 2                  # `path::` / backticked identifiers allowed in How it works
+CODE_TOKEN_RE = re.compile(r"`[^`\n]+`|[\w./-]+::\w+")
+ALT_RE = re.compile(r"(?i)\b(instead of|rather than|vs\.?|versus|alternatives?|over|"
+                    r"compared (?:to|with)|considered|rejected|could have|other options?|"
+                    r"would (?:be|have been|win) better)\b")
 V2_DATE = "2026-10-12"            # records dated before this are checked as v1
 V1_MAX_WORDS = 3000
 MINOR_LINES = 5                   # changed components this small never get a coverage WARN
@@ -1061,6 +1071,26 @@ def section_items(parsed: "Parsed", name: str) -> list[str]:
 # the check
 # ---------------------------------------------------------------------------
 
+def human_layer_warns(parsed: "Parsed") -> list[dict]:
+    """How it works is for people: WARN on more than HOW_MAX_CODE code tokens. Main design
+    choice must argue against something: WARN when it names no alternative."""
+    out = []
+    how = find_section(parsed, HOW)
+    if how and not is_waiver(how[1]):
+        n = len(CODE_TOKEN_RE.findall(how[1]))
+        if n > HOW_MAX_CODE:
+            out.append(_finding(WARN, "how_too_technical", f"'{HOW}' has {n} code references "
+                                "(path::Name or `identifiers`); it is for human readers - "
+                                "describe the steps in plain language, put names in Components",
+                                HOW))
+    main = find_section(parsed, MAIN)
+    if main and not is_waiver(main[1]) and not ALT_RE.search(main[1]):
+        out.append(_finding(WARN, "main_choice_no_alternative", f"'{MAIN}' names no "
+                            "alternative; say which 1-2 real options were possible and why "
+                            "this one won", MAIN))
+    return out
+
+
 def _finding(sev, code, msg, ref="") -> dict:
     return {"severity": sev, "code": code, "message": msg, "ref": ref}
 
@@ -1240,6 +1270,11 @@ def check_record(repo: Path, *, cfg: dict, mode: Optional[str] = None,
             findings.append(_finding(WARN, "section_missing", f"missing section: {BREAKS} "
                                      f"(required for records dated {BREAKS_DATE} or later)",
                                      BREAKS))
+        if (parsed.date or "9999") < HUMAN_DATE:      # older records: not required, no error
+            for name in HUMAN_SECTIONS:
+                if name in sections["missing"]:
+                    sections["missing"].remove(name)
+        findings.extend(human_layer_warns(parsed))
         if sections["missing"]:
             findings.append(_finding(ERROR, "section_missing", "missing section(s): "
                                      + ", ".join(sections["missing"]),
@@ -1888,6 +1923,34 @@ def self_test(check, integrity_py: str) -> None:
                   and rec["sections"]["missing"] == ["Rollback"] and "## Rollback" in text, text)
             check("record: bad Status -> ERROR", "status_invalid" in codes(rec, ERROR), text)
 
+            # human layer: date gate and the two WARNs
+            check("record: pre-cutover record without How it works / Main design choice -> "
+                  "no error", rec["sections"]["missing"] == ["Rollback"])
+            dated = GOOD_RECORD.format(filler=filler).replace("Date: 2026-10-12",
+                                                              f"Date: {HUMAN_DATE}")
+            w("docs/decisions/0007-totals.md", dated)
+            rc, rec, text = run(write=False)
+            check("record: post-cutover record without the human sections -> ERROR",
+                  rc == FAIL and rec["sections"]["missing"] == [HOW, MAIN], text)
+            human = ("## In short\n", "## How it works\n1. Each price is added up.\n"
+                     "2. The sum is reduced by a tenth.\n\n## Main design choice\n"
+                     "A fixed 10% factor rather than a configurable rate: the issue fixes "
+                     "the rate; a config would win once promotions vary.\n\n## In short\n")
+            w("docs/decisions/0007-totals.md", dated.replace(*human))
+            rc, rec, text = run(write=False)
+            check("record: post-cutover record with plain human sections -> pass, no human WARN",
+                  rc == PASS and not {"how_too_technical", "main_choice_no_alternative"}
+                  & set(codes(rec, WARN)), [f["message"] for f in rec["findings"]])
+            techy = dated.replace("## In short\n", "## How it works\n1. `a` calls `b`, then "
+                                  "src/app.py::compute_total runs.\n\n## Main design choice\n"
+                                  "A fixed 10% factor, as the issue says.\n\n## In short\n")
+            w("docs/decisions/0007-totals.md", techy)
+            rc, rec, text = run(write=False)
+            check("record: How it works with 3 code refs -> WARN how_too_technical",
+                  "how_too_technical" in codes(rec, WARN), text)
+            check("record: Main design choice naming no alternative -> WARN",
+                  "main_choice_no_alternative" in codes(rec, WARN), text)
+
             # facts block: write, idempotent, CRLF preserved
             body = GOOD_RECORD.format(filler=filler)
             w("docs/decisions/0007-totals.md", body, crlf=True)
@@ -1963,7 +2026,7 @@ def self_test(check, integrity_py: str) -> None:
                 "Date: 2026-10-12", "Date: 2026-10-20"))
             rc, rec, _ = run(write=False)
             check("record: Breaks section missing on a record dated after the cutover -> ERROR",
-                  rec["sections"]["missing"] == [BREAKS] and rc == FAIL)
+                  BREAKS in rec["sections"]["missing"] and rc == FAIL)
             reset()
 
             # unmentioned change, nonexistent ref, removed symbol unmentioned, bad test
