@@ -9,8 +9,12 @@ Finds the records under the record dir (config "record.dir", default docs/decisi
 Components, verified-facts block or other mentions touch the given components (path-suffix
 aware, using record.py's resolution), and prints selected sections, newest first:
 
-    debug:   Traps, Assumptions, Edge cases (Not handled only), Key parameters, Not verified
-    feature: Traps, Alternatives considered, Trade-offs, To change this
+    debug:   Traps, Main design choice, Assumptions, Edge cases (Not handled only),
+             Key parameters, Not verified
+    feature: Traps, Main design choice, Alternatives considered, Trade-offs, To change this
+
+"Main design choice" is in both so an agent does not re-argue a settled decision; "How it
+works" (written for people) is never included.
 
 v1 records (no Traps / Not verified) contribute the sections they have. The output is
 hypotheses, not proof: it opens with a header saying so. Truncated to --max-words on whole
@@ -35,9 +39,12 @@ from scope import EMPTY_TREE, ensure_repo, git, git_text, norm_path, parse_scope
 HEADER = ("Hypotheses from earlier decision records — check them against the code; "
           "they are not proof.")
 MODES = {
-    "debug": ["Traps", "Assumptions", "Edge cases", "Key parameters", "Not verified"],
-    "feature": ["Traps", "Alternatives considered", "Trade-offs", "To change this"],
+    "debug": ["Traps", "Main design choice", "Assumptions", "Edge cases", "Key parameters",
+              "Not verified"],
+    "feature": ["Traps", "Main design choice", "Alternatives considered", "Trade-offs",
+                "To change this"],
 }
+# never briefed: "How it works" is the plain-language walkthrough for human readers
 UNVERIFIED_RE = re.compile(r"\bnot (?:verified|measured|tested|checked)\b|\buntested\b",
                            re.IGNORECASE)
 LABELS = {"Edge cases": "Edge cases not handled"}
@@ -440,6 +447,8 @@ def self_test(check, integrity_py: str) -> None:
           "\n## Approach\n`node/retry.h` retries.\n## Assumptions\n- Clock is set.\n"
           "## Edge cases\n- Not handled: clock unset gives 1970 rows.\n## Trade-offs\n- Slow.\n")
         w("docs/decisions/0009-new.md", "# 0009: New retry\nStatus: partial · Date: 2026-10-12\n"
+          "## How it works\n1. Readings are retried.\n"
+          "## Main design choice\n- Keyed retries over timestamps: clocks drift.\n"
           "## Traps: why the obvious fix is wrong\n- Key needs boot_id: cycle_seq restarts.\n"
           "## Components\n- `fw/node/retry.h::RETRY` - attempts\n## Edge cases\n"
           "- **Handled:** dupes\n- **Not handled:**\n  - two nodes one pond\n"
@@ -455,7 +464,13 @@ def self_test(check, integrity_py: str) -> None:
               and "two nodes one pond" in text and "dupes" not in text
               and "Drift over deep sleep" in text and "Clock is set" in text
               and "0010" not in text, text)
+        check("brief debug: Main design choice included, How it works never",
+              "Keyed retries over timestamps" in text and "Readings are retried" not in text
+              and "How it works" not in text, text)
         text, _ = brief(repo, targets=_targets("fw/node/**"), mode="feature")
+        check("brief feature: Main design choice included, How it works never",
+              "Keyed retries over timestamps" in text and "Readings are retried" not in text,
+              text)
         check("brief feature: glob target, Traps + Trade-offs, waiver sections dropped",
               "boot_id" in text and "Slow." in text and "Alternatives" not in text
               and "Assumptions" not in text, text)
