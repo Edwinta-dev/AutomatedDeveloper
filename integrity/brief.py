@@ -15,6 +15,11 @@ aware, using record.py's resolution), and prints selected sections, newest first
 v1 records (no Traps / Not verified) contribute the sections they have. The output is
 hypotheses, not proof: it opens with a header saying so. Truncated to --max-words on whole
 bullets. Knows nothing about the runner (engine/).
+
+Relevance is IDF-weighted (score_records): a file matched by a target adds 1/(records naming
+it); a file more than 40% of the records name adds nothing unless the match is a component
+only a few records name; records of issues the issue text references (`#N`) always count.
+Below --min-score (default 0.5) nothing is printed.
 """
 from __future__ import annotations
 
@@ -36,6 +41,10 @@ MODES = {
 UNVERIFIED_RE = re.compile(r"\bnot (?:verified|measured|tested|checked)\b|\buntested\b",
                            re.IGNORECASE)
 LABELS = {"Edge cases": "Edge cases not handled"}
+COMMON_SHARE = 0.4     # a file named by more than this share of the records adds nothing
+MIN_CORPUS = 5         # below this many records every file counts (no "common" files)
+REF_BONUS = 1.0        # a record of an issue the issue text references (#N)
+MIN_SCORE = 0.5        # CLI default: below this, print nothing ("no specific records")
 
 
 # ---------------------------------------------------------------------------
@@ -200,10 +209,90 @@ def _bullets(body: str) -> list[str]:
     return out
 
 
+def issue_refs(issue_text: str) -> tuple[Optional[int], set[int]]:
+    """(the issue's own number from a `# #N` header, other `#N` numbers in the text)."""
+    t = issue_text or ""
+    m = re.match(r"^\s*#\s*#(\d+)", t)
+    own = int(m.group(1)) if m else None
+    nums = {int(x) for x in re.findall(r"(?<![\w&/#])#(\d{1,5})\b", t)}
+    return own, nums - ({own} if own is not None else set())
+
+
+def _comp_hit(mq: str, q: str) -> bool:
+    return mq == q or mq.startswith(q + ".") or q.startswith(mq + ".")
+
+
+def score_records(repo: Path, trees: Trees, ref: Optional[str], rdir: str,
+                  targets: list[tuple[str, Optional[str]]], issue_text: str = "",
+                  min_score: float = 0.0) -> list[dict]:
+    """IDF-style relevance. A target matched through a file adds 1/(records naming that
+    file); files named by more than COMMON_SHARE of the records add nothing unless the
+    match is at component level and that component is rare (1/(records naming it)).
+    Records of issues the issue text references (`#N`) always qualify. Kept: score >=
+    min_score. Sorted by score, then newest."""
+    own, refs_ = issue_refs(issue_text)
+    recs = []
+    for path in _list_records(repo, ref, rdir):
+        num = int(re.match(r"^(\d+)", path.rsplit("/", 1)[-1]).group(1))
+        if own is not None and num == own:
+            continue                                   # the issue's own record
+        text = _record_text(trees.read(path, "new")) or ""
+        files = _mentions(text, trees)
+        comps = set()
+        for p, q in comp_refs(text):
+            st, ps = trees.resolve(p, q)
+            for x in (ps if st in ("exact", "suffix", "ambiguous") else [norm_path(p)]):
+                comps.add((x, q))
+        recs.append({"path": path, "num": num, "text": text, "files": files, "comps": comps})
+    n = max(len(recs), 1)
+    df: dict = {}
+    for r in recs:
+        for f in r["files"]:
+            df[f] = df.get(f, 0) + 1
+    cdf: dict = {}
+    for t, q in targets:
+        if q:
+            cdf[(t, q)] = sum(1 for r in recs if any(_touches({p}, t) and _comp_hit(mq, q)
+                                                    for p, mq in r["comps"]))
+    out = []
+    for r in recs:
+        score, why = 0.0, []
+        for t, q in targets:
+            fs = [p for p in r["files"] if _touches({p}, t)]
+            if not fs:
+                continue
+            s_file = max((1.0 / df[p] for p in fs
+                          if df.get(p) and (n < MIN_CORPUS or df[p] / n <= COMMON_SHARE)),
+                         default=0.0)
+            s_comp = 0.0
+            if q and any(_touches({p}, t) and _comp_hit(mq, q) for p, mq in r["comps"]):
+                c = cdf.get((t, q), 0)
+                if c and (n < MIN_CORPUS or c / n <= COMMON_SHARE):
+                    s_comp = 1.0 / c
+            s = max(s_file, s_comp)
+            if s > 0:
+                score += s
+                why.append(f"{t}{'::' + q if q and s_comp >= s_file else ''} ({s:.2f})")
+        if r["num"] in refs_:
+            score += REF_BONUS
+            why.append(f"#{r['num']} referenced in the issue")
+        if score <= 0 or (score < min_score and r["num"] not in refs_):
+            continue
+        text = r["text"]
+        before = text.split(BEGIN)[0] + (text.split(END, 1)[1] if END in text else "")
+        parsed = parse_markdown(before)
+        out.append({"path": r["path"], "num": r["num"], "title": parsed.title or r["path"],
+                    "date": parsed.date or "", "status": parsed.status, "parsed": parsed,
+                    "score": round(score, 3), "why": why})
+    out.sort(key=lambda r: (r["score"], r["date"], r["num"]), reverse=True)
+    return out
+
+
 def brief(repo: Path, *, targets: list[tuple[str, Optional[str]]], mode: str,
           max_words: int = 600, ref: Optional[str] = None,
-          record_dir: str = "docs/decisions") -> tuple[str, list[dict]]:
-    """-> (text, matched records). Empty text when nothing matches."""
+          record_dir: str = "docs/decisions", issue_text: str = "",
+          min_score: float = 0.0) -> tuple[str, list[dict]]:
+    """-> (text, matched records). Empty text when nothing scores at least min_score."""
     if mode not in MODES:
         raise ValueError(f"mode must be debug|feature, not {mode!r}")
     repo = ensure_repo(Path(repo))
@@ -213,18 +302,8 @@ def brief(repo: Path, *, targets: list[tuple[str, Optional[str]]], mode: str,
             raise ValueError(f"unknown ref: {ref}")
         ref = p.stdout.decode().strip()
     trees = Trees(repo, ref if ref else EMPTY_TREE, ref)
-    matched = []
-    for path in _list_records(repo, ref, norm_path(record_dir)):
-        text = _record_text(trees.read(path, "new")) or ""
-        hits = _mentions(text, trees)
-        if not any(_touches(hits, t) for t, _ in targets):
-            continue
-        before = text.split(BEGIN)[0] + (text.split(END, 1)[1] if END in text else "")
-        parsed = parse_markdown(before)
-        num = int(re.match(r"^(\d+)", path.rsplit("/", 1)[-1]).group(1))
-        matched.append({"path": path, "num": num, "title": parsed.title or path,
-                        "date": parsed.date or "", "status": parsed.status, "parsed": parsed})
-    matched.sort(key=lambda r: (r["date"], r["num"]), reverse=True)
+    matched = score_records(repo, trees, ref, norm_path(record_dir), targets, issue_text,
+                            min_score)
     if not matched:
         return "", []
     lines = [HEADER, ""]
@@ -311,7 +390,9 @@ def targets_from(components: Optional[str], issue_text: Optional[str],
         return [(norm_path(p), None) for p in paths]
     sc = parse_scope(issue_text or "")
     if sc is None:
-        raise ValueError("no **Scope:** line in the issue file")
+        if issue_refs(issue_text or "")[1]:
+            return []                      # no Scope line: referenced records only
+        raise ValueError("no **Scope:** line and no #N reference in the issue file")
     return [(e.path, e.qualname) for e in sc.entries]
 
 
@@ -391,3 +472,34 @@ def self_test(check, integrity_py: str) -> None:
                             encoding="utf-8")
         check("brief CLI: --issue-file Scope line, --ref, exit 0",
               cp.returncode == 0 and "boot_id" in cp.stdout, cp.stdout)
+
+        # relevance: a file most records name adds nothing; a rare component does;
+        # an issue the text references always qualifies; below the threshold -> nothing
+        w("app/settings.py", "class Settings:\n    x = 1\n")
+        w("app/worker.py", "def poll():\n    return 1\n\n\ndef rare():\n    return 2\n")
+        for k in range(20, 26):
+            extra = "`app/worker.py::rare` " if k == 21 else ""
+            w(f"docs/decisions/00{k}-r{k}.md", f"# 00{k}: R{k}\nStatus: implemented · "
+              f"Date: 2026-10-0{k - 19}\n## Traps\n- trap {k} in `app/settings.py` and "
+              f"`app/worker.py::poll` {extra}\n")
+        w("docs/decisions/0030-regions.md", "# 0030: Regions\nStatus: implemented · "
+          "Date: 2026-10-09\n## Traps\n- region trap\n")
+        g("add", "-A")
+        g("commit", "-qm", "more")
+        own = "# #31 Engine\n\nUses the regions of #30.\n\n**Scope:** `app/settings.py`, " \
+              "`app/worker.py::poll`\n"
+        _, m = brief(repo, targets=targets_from(None, own, None), mode="debug",
+                     issue_text=own, min_score=MIN_SCORE)
+        check("brief relevance: common file/component excluded, referenced #30 included",
+              [r["num"] for r in m] == [30], [(r["num"], r["score"]) for r in m])
+        rare = own.replace("`app/worker.py::poll`", "`app/worker.py::rare`")
+        _, m = brief(repo, targets=targets_from(None, rare, None), mode="debug",
+                     issue_text=rare, min_score=MIN_SCORE)
+        check("brief relevance: a rare component in a common file still matches",
+              21 in [r["num"] for r in m] and 22 not in [r["num"] for r in m],
+              [(r["num"], r["score"]) for r in m])
+        none_ = "# #31 Engine\n\n**Scope:** `app/settings.py`\n"
+        text, m = brief(repo, targets=targets_from(None, none_, None), mode="debug",
+                        issue_text=none_, min_score=MIN_SCORE)
+        check("brief relevance: nothing specific -> empty output", text == "" and m == [],
+              [(r["num"], r["score"]) for r in m])

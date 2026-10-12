@@ -84,6 +84,7 @@
     "//": "Before each attempt on an issue with a **Scope:** line, the runner runs integrity/integrity.py brief and puts slices of earlier decision records for those components (Traps, Assumptions, Not handled, Key parameters, Not verified for bug/fix/regression issues; Traps, Alternatives, Trade-offs, To change this otherwise) just after the issue text, as hypotheses to check, not proof. mode: auto | debug | feature. A failure only skips the brief.",
     "enabled": true,
     "mode": "auto",
-    "max_words": 600
+    "max_words": 600,
+    "min_score": 0.5
   }
 }

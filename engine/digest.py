@@ -58,6 +58,7 @@ class Decision:
     warnings: list = field(default_factory=list)   # WARN lines from the facts block
     warn_total: Optional[int] = None               # "N warning(s)" from the facts block
     checks: str = ""                               # "Supervisor checks passed" line
+    evidence: Optional[dict] = None                # Evidence totals from the facts block
 
     def not_handled(self) -> list:
         return not_handled(self.section("edge cases"))
@@ -69,6 +70,10 @@ class Decision:
             return [x for x in items if x and not re.match(r"(?i)^(none|n/?a)\b", x)]
         return [re.sub(r"(?i)^\**\s*not verified\s*:?\s*\**\s*", "", x.strip().lstrip("-*+ ").strip())
                 for x in _bullets(self.section("how it was verified")) if UNVERIFIED_RE.search(x)]
+
+    def breaks(self) -> list:
+        items = [x.strip().lstrip("-*+ ").strip() for x in _bullets(self.section("breaks"))]
+        return [x for x in items if x and not re.match(r"(?i)^(none|n/?a|not applicable)\b", x)]
 
     def section(self, prefix: str) -> str:
         for k, v in self.sections.items():
@@ -139,6 +144,11 @@ def parse_decision(path: str, text: str) -> Decision:
         m = re.match(r"^\d+ error\(s\), (\d+) warning\(s\)", line.strip())
         if m:
             d.warn_total = int(m.group(1))
+        m = re.match(r"^(\d+) checked by the tool, (\d+) tested in this run, (\d+) claimed",
+                     line.strip())
+        if m:
+            d.evidence = {"checked": int(m.group(1)), "tested": int(m.group(2)),
+                          "claimed": int(m.group(3))}
     for line in flines:
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
         if line.lstrip().startswith("|") and len(cells) >= 5 and cells[0].startswith("`"):
@@ -219,6 +229,7 @@ class Digest:
     gaps: list
     runs: list = field(default_factory=list)       # run ids covered (window mode)
     drift: list = field(default_factory=list)      # pinned config files that changed mid-run
+    refs_only: dict = field(default_factory=dict)  # issue (str) -> why it was committed with Refs
     since: str = ""                                # e.g. "origin/main (merge-base abc1234)"
 
 
@@ -305,7 +316,8 @@ def gather(run_ref: str) -> Digest:
                   env_blockers=_dict_field(state, "env_blockers"),
                   dep_blocked=summary_dependency_blocks(summary),
                   window=(start, end), gaps=gaps, runs=[run.run_id],
-                  drift=[str(x) for x in state.get("pin_drift") or []])
+                  drift=[str(x) for x in state.get("pin_drift") or []],
+                  refs_only=_dict_field(state, "refs_only"))
 
 
 def _same_path(a: str, b: str) -> bool:
@@ -389,11 +401,13 @@ def gather_window(run_ref: str, root: Optional[Path] = None) -> Digest:
     deps: dict = {}
     gaps: list = []
     drift: list = []
+    refs_only: dict = {}
     for dg in digs:                                # oldest -> newest: later runs override
         env.update(dg.env_blockers)
         deps.update(dg.dep_blocked)
         gaps += dg.gaps
         drift += [f"{dg.run.run_id}: {x}" for x in dg.drift]
+        refs_only.update(dg.refs_only)
         for n, v in dg.issues.items():
             cur = issues.get(n)
             if cur is None:
@@ -437,7 +451,7 @@ def gather_window(run_ref: str, root: Optional[Path] = None) -> Digest:
     return Digest(run=allruns, state=st, issues=issues, env_blockers=env, dep_blocked=deps,
                   window=(min(starts) if starts else None, max(ends) if ends else None),
                   gaps=list(dict.fromkeys(gaps)), runs=[dg.run.run_id for dg in digs],
-                  drift=drift,
+                  drift=drift, refs_only=refs_only,
                   since=f"origin/{base}" + (f" (merge-base {mb[:8]})" if mb else ""))
 
 
@@ -465,9 +479,6 @@ def attention_items(d: Digest) -> list:
         items.append((0, f"**Set up the environment** ({b.get('kind', 'tool')}): "
                          f"{_short(b.get('subject') or key, 140)}. Blocks {nums or 'issues'}. "
                          f"To do: {_short(b.get('hint') or 'install/configure it, then resume the run', 180)}"))
-    for x in d.drift[:4]:
-        items.append((1, f"**Config changed mid-run**: {_short(x, 200)}. Attempts after the change "
-                         "ran with different prompts or checks; a retry around it may be skew, not a code fault."))
     for n, v in sorted(d.issues.items()):
         if v.deferred_reason:
             if v.blocker:
@@ -476,19 +487,35 @@ def attention_items(d: Digest) -> list:
                 todo = "the agent could not finish it within its retries; consider splitting the issue or clarifying it"
             else:
                 todo = "read the reason, clarify or split the issue, then resume"
-            items.append((1, f"**#{n} {v.title} was set aside.** Why: "
+            items.append((3, f"**#{n} {v.title} was set aside.** Why: "
                              f"{_short(v.deferred_reason, 200)} To do: {todo}."))
     for n, deps in sorted(d.dep_blocked.items()):
         v = d.issues.get(n)
-        items.append((2, f"**#{n} {v.title if v else ''}** is waiting on {deps}; it starts once those are done."))
+        items.append((3.5, f"**#{n} {v.title if v else ''}** is waiting on {deps}; it starts once those are done."))
     for n, v in sorted(d.issues.items()):
         if not v.committed:
             continue
         link = _rec_link(v)
         reasons = []
-        status = (v.decision.status if v.decision else "") or (v.integ.get("record") or {}).get("status", "")
+        rj = v.integ.get("record") or {}
+        breaks = [str(x) for x in rj.get("breaks") or []] or (v.decision.breaks() if v.decision else [])
+        if breaks:
+            more = f" (+{len(breaks) - 2} more)" if len(breaks) > 2 else ""
+            items.append((1, f"**#{n} {v.title} breaks or needs follow-up**"
+                             + (" (committed with Refs, not Closes)" if str(n) in d.refs_only
+                                else "") + ": " + "; ".join(f"\"{_short(x, 160)}\"" for x in breaks[:2])
+                             + more + (f" Record: {link}" if link else "")))
+        status = (v.decision.status if v.decision else "") or rj.get("status", "")
+        st_why = []
         if status in ("partial", "blocked"):
-            reasons.append(f"the record says the work is **{status}**")
+            st_why.append(f"the record says the work is **{status}**")
+        rs = (rj.get("result_status") or "").upper()
+        if status and rs and (rs == "COMPLETE") != (status == "implemented"):
+            st_why.append(f"status mismatch: record **{status}**, agent **{rs}**")
+        if st_why:
+            items.append((2, f"**#{n} {v.title} is not finished**: " + "; ".join(st_why) + "."
+                             + (" Committed with Refs, not Closes." if str(n) in d.refs_only else "")
+                             + (f" Record: {link}" if link else "")))
         oos = (v.integ.get("record") or {}).get("out_of_scope") or {}
         unexpl = [i for i in oos.get("items") or [] if isinstance(i, dict) and not i.get("explained")]
         sc = v.integ.get("scope") or {}
@@ -511,7 +538,7 @@ def attention_items(d: Digest) -> list:
             reasons.append(f"validation skipped {len(v.skips)} check(s) (not validated): "
                            + "; ".join(f"`{_short(x, 90)}`" for x in v.skips[:3]))
         if reasons:
-            items.append((3, f"**Review #{n} {v.title}**: " + "; ".join(reasons) + "."
+            items.append((3.5, f"**Review #{n} {v.title}**: " + "; ".join(reasons) + "."
                              + (f" Record: {link}" if link else "")))
         if v.decision:
             def quote(xs, k=2):
@@ -571,12 +598,18 @@ def render(d: Digest) -> str:
             L.append(f"- ...and {len(items) - 25} more lower-priority notes.")
     else:
         L.append("Nothing flagged. Skim *What was built* below.")
+    if d.drift:
+        L += ["", "<sub>Note: config changed mid-run (" + "; ".join(_short(x, 120) for x in d.drift[:3])
+              + (f"; +{len(d.drift) - 3} more" if len(d.drift) > 3 else "")
+              + "). Attempts after the change ran with different prompts or checks; a retry "
+              "around it may be skew, not a code fault.</sub>"]
     L.append("")
 
     L += ["## What was built", ""]
     if done:
-        L += ["| # | Title | In short | Trade-off | Checks passed | Warn | Record | Commit |",
-              "|---|---|---|---|---|---|---|---|"]
+        L += ["| # | Title | In short | Trade-off | Checks passed | Evidence (checked/tested/claimed) "
+              "| Warn | Record | Commit |",
+              "|---|---|---|---|---|---|---|---|---|"]
         for v in sorted(done, key=lambda x: x.number):
             dec = v.decision
             short = _short(dec.section("in short"), 230) if dec else ""
@@ -590,8 +623,10 @@ def render(d: Digest) -> str:
             nw = (rj.get("counts") or {}).get("WARN")
             if nw is None and dec:
                 nw = dec.warn_total if dec.warn_total is not None else len(dec.warnings)
+            et = (rj.get("evidence") or {}).get("totals") or (dec.evidence if dec else None)
+            evs = f"{et['checked']}/{et['tested']}/{et['claimed']}" if et else "-"
             L.append(f"| #{v.number} | {cr_cell(v.title)} | {cr_cell(short)} | {cr_cell(trade) or '-'} | "
-                     f"{cr_cell(checks) or '-'} | {nw if nw is not None else '-'} | "
+                     f"{cr_cell(checks) or '-'} | {evs} | {nw if nw is not None else '-'} | "
                      f"{cr_cell(_rec_link(v)) or '-'} | `{v.sha[:8] or '?'}` |")
     else:
         L.append("Nothing was committed in this run.")
@@ -754,6 +789,8 @@ def self_test() -> int:
             "SKIPPED: reviewer (an earlier gate failed)\n")
         (rd / "integrity" / "record_issue-1_attempt-2.json").write_text(json.dumps({
             "verdict": "pass", "status": "partial", "record_path": "docs/decisions/0001-imu.md",
+            "result_status": "COMPLETE", "breaks": ["App no longer reads gyro_raw; follow-up filed"],
+            "evidence": {"totals": {"checked": 3, "tested": 1, "claimed": 7}},
             "findings": [{"severity": "WARN", "code": "oos_unexplained", "message": "x"}],
             "out_of_scope": {"total": 1, "explained": 0,
                              "items": [{"target": "src/util.py", "explained": False}]}}))
@@ -777,15 +814,22 @@ def self_test() -> int:
               all(s in att for s in ("**partial**", "outside the issue's scope",
                                      "2 thing(s) removed, 1 still referenced", "vetoed 1"))
               and "consistency warning" not in att)
-        check("warning count column + checks passed", "| Checks passed | Warn |" in text
-              and "| tests, record | 1 |" in text)
+        check("warning count + evidence columns + checks passed",
+              "| Checks passed | Evidence (checked/tested/claimed) | Warn |" in text
+              and "| tests, record | 3/1/7 | 1 |" in text)
+        check("rank: env < breaks < partial/mismatch < set aside < review < not verified",
+              att.index("Set up the environment") < att.index("#1 IMU reader breaks or needs")
+              < att.index("#1 IMU reader is not finished") < att.index("was set aside")
+              < att.index("Review #1") < att.index("#1 not verified")
+              and "gyro_raw" in att and "status mismatch" in att)
         check("rank order: review < not verified < not handled < assumes",
               att.index("Review #1") < att.index("#1 not verified") < att.index("#1 not handled")
               < att.index("#1 assumes"))
         check("#2 flagged only for its SQL skip", "Review #2" in att
               and "SKIP sql tests (Docker not running)" in att and "earlier gate failed" not in att)
-        check("mid-run config change noted", "Config changed mid-run" in att
-              and "validate.json changed" in att)
+        check("mid-run config change is a footnote, not a ranked item",
+              "config changed mid-run" in att and "validate.json changed" in att
+              and not re.search(r"(?m)^\d+\. .*config changed mid-run", att, re.I))
         check("not handled quoted", "sensor unplugged mid-run" in att and "0x68" in att)
         check("built rows", "ten times a second" in text and "Polling is simpler" in text
               and "| #2 |" in text)

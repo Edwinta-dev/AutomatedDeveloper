@@ -963,7 +963,9 @@ def cmd_record(args) -> int:
     except (GitError, refs.RefsError, ValueError, OSError, json.JSONDecodeError) as exc:
         print(f"DECISION RECORD: MISCONFIGURED - {exc}")
         return MISCONFIGURED
-    print(text)
+    sys.stdout.flush()
+    sys.stdout.buffer.write((text + "\n").encode("utf-8"))   # UTF-8 whatever the code page
+    sys.stdout.flush()
     return rc
 
 
@@ -975,11 +977,12 @@ def cmd_brief(args) -> int:
         if args.issue_file and not Path(args.issue_file).is_file():
             raise ValueError(f"issue file not found: {args.issue_file}")
         targets = brief.targets_from(args.components, issue_text, args.paths)
-        if not targets:
+        if not targets and not brief.issue_refs(issue_text or "")[1]:
             raise ValueError("no components: pass --components, --issue-file or --paths")
         rdir = record.load_config(Path(args.config).expanduser() if args.config else None)["dir"]
         text, _ = brief.brief(Path(args.repo).expanduser(), targets=targets, mode=args.mode,
-                              max_words=args.max_words, ref=args.ref, record_dir=rdir)
+                              max_words=args.max_words, ref=args.ref, record_dir=rdir,
+                              issue_text=issue_text or "", min_score=args.min_score)
     except (GitError, ValueError, OSError, json.JSONDecodeError) as exc:
         print(f"BRIEF: MISCONFIGURED - {exc}", file=sys.stderr)
         return MISCONFIGURED
@@ -1055,6 +1058,9 @@ def main(argv=None) -> int:
     src.add_argument("--paths", nargs="+", help="file or folder paths")
     br.add_argument("--mode", choices=["debug", "feature"], required=True)
     br.add_argument("--max-words", type=int, default=600)
+    br.add_argument("--min-score", type=float, default=0.5,
+                    help="relevance threshold (IDF-weighted matches + issue references); "
+                         "below it nothing is printed")
     br.add_argument("--ref", help="read records and code at this branch/commit "
                                   "(default: working tree)")
     br.add_argument("--config", help='project config JSON; its "record.dir" is used')

@@ -450,6 +450,9 @@ class RunState:
     # every change seen since (a mid-run change caused prompt/checker skew).
     pinned: dict[str, str] = field(default_factory=dict)
     pin_drift: list[str] = field(default_factory=list)
+    # issue -> reasons it was committed with "Refs #N" instead of "Closes #N"
+    # (record lists breaks / follow-up, Status partial/blocked, or status mismatch)
+    refs_only: dict[str, list] = field(default_factory=dict)
 
     @property
     def state_path(self) -> Path:
@@ -460,7 +463,9 @@ class RunState:
 
     @classmethod
     def load(cls, path: Path) -> "RunState":
-        return cls(**json.loads(path.read_text(encoding="utf-8")))
+        data = json.loads(path.read_text(encoding="utf-8"))
+        known = set(cls.__dataclass_fields__)
+        return cls(**{k: v for k, v in data.items() if k in known})
 
 
 def _sha256_file(path: Path) -> str:
@@ -699,7 +704,7 @@ Operating contract for the unattended coding agent:
 """
 
 
-BRIEF_DEFAULTS = {"enabled": False, "mode": "auto", "max_words": 600}
+BRIEF_DEFAULTS = {"enabled": False, "mode": "auto", "max_words": 600, "min_score": 0.5}
 SCOPE_LINE_RE = re.compile(r"(?im)^\s*\**\s*Scope\s*:\s*\**")
 BUG_WORDS_RE = re.compile(r"(?i)\b(bug|fix|fixes|fixed|regression)\b")
 
@@ -718,28 +723,39 @@ def make_brief(repo: Path, issue: Issue, issue_text: str, cfg: Optional[dict],
     """Slices of earlier decision records for the issue's Scope (integrity brief, run as a
     subprocess like the gates; never imported). Any failure -> "" with one log line."""
     c = dict(BRIEF_DEFAULTS, **(cfg or {}))
-    if not c.get("enabled") or not SCOPE_LINE_RE.search(issue_text or ""):
+    refs_ = set(re.findall(r"(?<![\w&/#])#(\d{1,5})\b", issue_text or "")) - {str(issue.number)}
+    if not c.get("enabled") or not (SCOPE_LINE_RE.search(issue_text or "") or refs_):
         return ""
     mode = brief_mode(issue, str(c.get("mode") or "auto"))
     tool = harness_dir().parent / "integrity" / "integrity.py"
     try:
         with tempfile.TemporaryDirectory() as td:
-            f = Path(run_dir or td) / f"brief_issue_{issue.number}.md"
+            base = Path(run_dir or td)
+            f = base / f"issue_{issue.number}.md"          # the issue text (brief input)
             f.write_text(f"# #{issue.number} {issue.title}\n\n{issue_text}", encoding="utf-8")
             argv = [python, str(tool), "brief", "--repo", str(repo), "--issue-file", str(f),
-                    "--mode", mode, "--max-words", str(int(c.get("max_words") or 600))]
+                    "--mode", mode, "--max-words", str(int(c.get("max_words") or 600)),
+                    "--min-score", str(float(c.get("min_score", BRIEF_DEFAULTS["min_score"])))]
             if config_path:
                 argv += ["--config", config_path]
             cp = subprocess.run(argv, cwd=str(repo), stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, timeout=120)
+            out = cp.stdout.decode("utf-8", "replace").strip() if cp.returncode == 0 else ""
+            if run_dir is not None:
+                (base / f"brief_issue_{issue.number}.md").write_text(
+                    (out + "\n") if out else "(no specific records: no earlier decision record "
+                    "scored above the relevance threshold; no brief inserted)\n",
+                    encoding="utf-8")
         if cp.returncode != 0:
             print(f"Brief skipped for #{issue.number}: "
                   f"{cp.stderr.decode('utf-8', 'replace').strip()[:200] or 'exit ' + str(cp.returncode)}",
                   flush=True)
             return ""
-        out = cp.stdout.decode("utf-8", "replace").strip()
         if out:
             print(f"Brief for #{issue.number} ({mode}): {len(out.split())} words", flush=True)
+        else:
+            print(f"Brief for #{issue.number}: no specific records (nothing inserted)",
+                  flush=True)
         return out
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         print(f"Brief skipped for #{issue.number}: {exc}", flush=True)
@@ -1660,8 +1676,44 @@ CLOSES_RE = re.compile(r"(?im)^\s*(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(
 
 def issues_committed_on_branch(repo: Path, git_exe: str, base: str) -> set[int]:
     """Issue numbers referenced by 'Closes #N' in commits not yet on origin/<base>."""
-    log = git(repo, git_exe, "log", "--format=%B", f"origin/{base}..HEAD", check=False)
-    return {int(n) for n in CLOSES_RE.findall(log)}
+    log = git(repo, git_exe, "log", "--format=%B%x00", f"origin/{base}..HEAD", check=False)
+    return committed_from_log(log)
+
+
+def committed_from_log(log: str) -> set[int]:
+    """'Closes #N' anywhere, or the runner's own 'issue #N: ...' commit that says
+    'Refs #N.' (committed but deliberately left open: breaks / partial / mismatch)."""
+    out = {int(n) for n in CLOSES_RE.findall(log)}
+    for body in log.split("\x00"):
+        m = re.match(r"\s*issue #(\d+):", body)
+        if m and re.search(rf"(?m)^\s*Refs #{m.group(1)}\.?\s*$", body):
+            out.add(int(m.group(1)))
+    return out
+
+
+def closing_decision(run_dir: Path, number: int, attempt: int,
+                     result_status: Optional[str]) -> tuple[bool, list[str]]:
+    """(close?, reasons not to). Reads this attempt's decision-record JSON written by the
+    record gate (run_dir/integrity/record_issue-N_attempt-K.json; files only, integrity/
+    is never imported). No record JSON -> close as before."""
+    f = Path(run_dir) / "integrity" / f"record_issue-{number}_attempt-{attempt}.json"
+    try:
+        rec = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True, []
+    why: list[str] = []
+    breaks = [str(x) for x in rec.get("breaks") or [] if str(x).strip()]
+    if breaks:
+        why.append("the record lists breaks / follow-up: "
+                   + "; ".join(b if len(b) <= 160 else b[:157] + "..." for b in breaks[:3])
+                   + (f" (+{len(breaks) - 3} more)" if len(breaks) > 3 else ""))
+    status = (rec.get("status") or "").lower()
+    if status in ("partial", "blocked"):
+        why.append(f"the record says Status: {status}")
+    rs = (result_status or rec.get("result_status") or "").upper()
+    if status and rs and (rs == "COMPLETE") != (status == "implemented"):
+        why.append(f"status mismatch: record says {status}, agent says {rs}")
+    return not why, why
 
 
 # ===========================================================================
@@ -2024,12 +2076,21 @@ def supervisor(args) -> int:
 
         if candidate:
             message = f"issue #{issue.number}: {issue.title}"
+            close_ok, why_open = closing_decision(run_dir, issue.number, state.attempt,
+                                                  result.status)
+            if why_open:
+                state.refs_only[nkey] = why_open
+                print(f"Not closing #{issue.number} (commit says Refs, not Closes):\n"
+                      + "\n".join(f"  - {x}" for x in why_open), flush=True)
+            else:
+                state.refs_only.pop(nkey, None)
             if args.close_on == "merge":
-                message += f"\n\nCloses #{issue.number}."
+                message += (f"\n\nCloses #{issue.number}." if close_ok
+                            else f"\n\nRefs #{issue.number}.")
             git(repo, tools.git, "commit", "-m", message)
             commit = git(repo, tools.git, "rev-parse", "--short", "HEAD").strip()
             print(f"Committed issue #{issue.number} as {commit}", flush=True)
-            if args.close_on == "commit":
+            if args.close_on == "commit" and close_ok:
                 closed = close_issue_with_retry(
                     repo, tools, state.repo_name, issue.number,
                     f"Implemented on `{state.branch}` in `{commit}`. "
@@ -2143,7 +2204,11 @@ def finalize(state: RunState, repo: Path, tools: Tools, exclude: set[int],
                f"**Finished:** {iso_now()}\n**Attempts:** {state.attempt}\n"
                f"**Commits ahead of {state.base_branch}:** {ahead}\n\n"
                "## Committed on this branch (close when the PR merges)\n"
-               + ("\n".join(f"Closes #{n}" for n in done) or "- None")
+               + ("\n".join(f"Closes #{n}" for n in done if str(n) not in state.refs_only)
+                  or "- None")
+               + "\n\n## Committed but left open (breaks / follow-up, partial, mismatch)\n"
+               + ("\n".join(f"- Refs #{n}: {'; '.join(state.refs_only[str(n)])}"
+                            for n in done if str(n) in state.refs_only) or "- None")
                + "\n\n## Remaining open frozen issues\n"
                + ("\n".join(f"- #{x.number} {x.title}" for x in remaining) or "- None")
                + "\n\n## Blocked by open dependencies\n"
@@ -2618,6 +2683,39 @@ def self_test() -> int:
               and make_brief(_br, Issue(5, "Fix"), "no scope", {"enabled": True}) == "")
         check("make_brief: failure -> empty, no exception",
               make_brief(_br / "missing", Issue(5, "Fix"), _txt, {"enabled": True}) == "")
+        _rd = _br / "run"
+        _rd.mkdir()
+        make_brief(_br, Issue(5, "Fix retry"), _txt, {"enabled": True}, run_dir=_rd)
+        check("make_brief: run dir gets issue_N.md (issue text) and brief_issue_N.md (brief)",
+              "Retry is broken" in (_rd / "issue_5.md").read_text(encoding="utf-8")
+              and "boot_id" in (_rd / "brief_issue_5.md").read_text(encoding="utf-8"))
+        _nb = make_brief(_br, Issue(6, "Fix other"), "x\n\n**Scope:** `src/other.py`\n",
+                         {"enabled": True}, run_dir=_rd)
+        check("make_brief: nothing relevant -> no brief, note in brief_issue_N.md",
+              _nb == "" and "no specific records" in
+              (_rd / "brief_issue_6.md").read_text(encoding="utf-8"))
+
+    # Closes vs Refs: from this attempt's decision-record JSON (files only)
+    with tempfile.TemporaryDirectory() as _cd:
+        _cr = Path(_cd)
+        (_cr / "integrity").mkdir()
+
+        def _rec(**kw):
+            (_cr / "integrity" / "record_issue-9_attempt-2.json").write_text(
+                json.dumps(dict({"status": "implemented", "breaks": []}, **kw)),
+                encoding="utf-8")
+            return closing_decision(_cr, 9, 2, "COMPLETE")
+        check("closing: no record JSON -> Closes", closing_decision(_cr, 9, 1, "COMPLETE")
+              == (True, []))
+        check("closing: implemented, no breaks -> Closes", _rec() == (True, []))
+        _c, _w = _rec(breaks=["App no longer reads current_gcc; follow-up #95"])
+        check("closing: breaks listed -> Refs with the item", not _c and "current_gcc" in _w[0])
+        _c, _w = _rec(status="partial")
+        check("closing: Status partial -> Refs (and a status mismatch with COMPLETE)",
+              not _c and any("partial" in x for x in _w) and any("mismatch" in x for x in _w))
+        check("committed detection: runner Refs commit counts, a stray Refs does not",
+              committed_from_log("issue #9: t\n\nRefs #9.\n\x00other\n\nRefs #4.\n\x00"
+                                 "issue #3: x\n\nCloses #3.\n\x00") == {9, 3})
 
     # Gate context: path tokens expand inside strings; __PY__ stays whole-token.
     _tools = Tools(git="git", gh="gh", python=sys.executable)
