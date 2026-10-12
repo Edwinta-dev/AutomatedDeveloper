@@ -36,6 +36,9 @@ INTEGRITY_ANY_RE = re.compile(r"^(scope|refs|record)_issue-(\d+)_attempt-(\d+)\.
 FACTS_BEGIN = "<!-- verified-facts:begin"
 FACTS_END = "<!-- verified-facts:end -->"
 VETO_RE = re.compile(r"(?im)^\s*VERDICT:\s*VETO\b")
+# A validation SKIP line (a skipped check is not a pass); not the runner's own
+# "SKIPPED: <gate> (an earlier gate failed)".
+SKIP_RE = re.compile(r"^\s*(SKIP|SKIPPED)\b(?!: .* \(an earlier gate failed\)$)")
 STATUS_RE = re.compile(r"(?im)^\s*Status:\s*\**\s*(implemented|partial|blocked)\b")
 
 
@@ -73,6 +76,7 @@ class IssueView:
     decision: Optional[Decision] = None
     integ: dict = field(default_factory=dict)      # kind -> latest record dict
     integ_paths: dict = field(default_factory=dict)  # kind -> file path
+    skips: list = field(default_factory=list)      # SKIP lines in the last validation
 
 
 def _first_line(text: str, limit: int = 160) -> str:
@@ -191,7 +195,17 @@ class Digest:
     window: tuple
     gaps: list
     runs: list = field(default_factory=list)       # run ids covered (window mode)
+    drift: list = field(default_factory=list)      # pinned config files that changed mid-run
     since: str = ""                                # e.g. "origin/main (merge-base abc1234)"
+
+
+def skip_lines(text: str, limit: int = 6) -> list:
+    out: list = []
+    for line in (text or "").splitlines():
+        t = line.strip()[:160]
+        if SKIP_RE.match(line) and t not in out:
+            out.append(t)
+    return out[:limit]
 
 
 def gather(run_ref: str) -> Digest:
@@ -212,6 +226,8 @@ def gather(run_ref: str) -> Digest:
             v.committed = ir.committed
             v.attempts = len(ir.attempts)
             v.vetoes = sum(1 for a in ir.attempts if VETO_RE.search(a.validation_text or ""))
+            if ir.attempts:
+                v.skips = skip_lines(ir.attempts[-1].validation_text)
         if n in deferred and not v.committed:
             v.deferred_reason = deferred[n]
             v.blocker = blockers.get(n)
@@ -265,7 +281,8 @@ def gather(run_ref: str) -> Digest:
     return Digest(run=run, state=state, issues=views,
                   env_blockers=_dict_field(state, "env_blockers"),
                   dep_blocked=summary_dependency_blocks(summary),
-                  window=(start, end), gaps=gaps, runs=[run.run_id])
+                  window=(start, end), gaps=gaps, runs=[run.run_id],
+                  drift=[str(x) for x in state.get("pin_drift") or []])
 
 
 def _same_path(a: str, b: str) -> bool:
@@ -348,10 +365,12 @@ def gather_window(run_ref: str, root: Optional[Path] = None) -> Digest:
     env: dict = {}
     deps: dict = {}
     gaps: list = []
+    drift: list = []
     for dg in digs:                                # oldest -> newest: later runs override
         env.update(dg.env_blockers)
         deps.update(dg.dep_blocked)
         gaps += dg.gaps
+        drift += [f"{dg.run.run_id}: {x}" for x in dg.drift]
         for n, v in dg.issues.items():
             cur = issues.get(n)
             if cur is None:
@@ -364,6 +383,7 @@ def gather_window(run_ref: str, root: Optional[Path] = None) -> Digest:
             cur.integ.update(v.integ)
             cur.integ_paths.update(v.integ_paths)
             cur.decision = v.decision or cur.decision
+            cur.skips = v.skips or cur.skips
     # committed = what is on the branch beyond the base, nothing else
     commits = branch_commits(repo, base, branch)
     recs = decisions_at_tip(repo, branch)
@@ -394,6 +414,7 @@ def gather_window(run_ref: str, root: Optional[Path] = None) -> Digest:
     return Digest(run=allruns, state=st, issues=issues, env_blockers=env, dep_blocked=deps,
                   window=(min(starts) if starts else None, max(ends) if ends else None),
                   gaps=list(dict.fromkeys(gaps)), runs=[dg.run.run_id for dg in digs],
+                  drift=drift,
                   since=f"origin/{base}" + (f" (merge-base {mb[:8]})" if mb else ""))
 
 
@@ -421,6 +442,9 @@ def attention_items(d: Digest) -> list:
         items.append((0, f"**Set up the environment** ({b.get('kind', 'tool')}): "
                          f"{_short(b.get('subject') or key, 140)}. Blocks {nums or 'issues'}. "
                          f"To do: {_short(b.get('hint') or 'install/configure it, then resume the run', 180)}"))
+    for x in d.drift[:4]:
+        items.append((1, f"**Config changed mid-run**: {_short(x, 200)}. Attempts after the change "
+                         "ran with different prompts or checks; a retry around it may be skew, not a code fault."))
     for n, v in sorted(d.issues.items()):
         if v.deferred_reason:
             if v.blocker:
@@ -466,6 +490,9 @@ def attention_items(d: Digest) -> list:
             reasons.append(f"{rem} thing(s) removed" + (f", {dang} still referenced elsewhere" if dang else ""))
         if v.vetoes:
             reasons.append(f"the reviewer vetoed {v.vetoes} attempt(s) before it passed")
+        if v.skips:
+            reasons.append(f"validation skipped {len(v.skips)} check(s) (not validated): "
+                           + "; ".join(f"`{_short(x, 90)}`" for x in v.skips[:3]))
         if reasons:
             items.append((3, f"**Review #{n} {v.title}**: " + "; ".join(reasons) + "."
                              + (f" Record: {link}" if link else "")))
@@ -680,6 +707,7 @@ def self_test() -> int:
                  "frozen_titles": {"1": "IMU reader", "2": "Motor limits", "3": "Camera",
                                    "4": "Docs"},
                  "started_at": started, "status": "finished",
+                 "pin_drift": ["validate.json changed (sha abc -> def) before attempt 3"],
                  "deferred": {"3": "agent declared BLOCKED (MISSING_TOOL): opencv not installed"},
                  "deferred_blockers": {"3": {"kind": "MISSING_TOOL", "subject": "opencv",
                                              "hint": "pip install opencv-python"}},
@@ -693,6 +721,9 @@ def self_test() -> int:
         for k, n in ((1, 1), (2, 1), (3, 2), (4, 3)):
             (rd / f"attempt_{k:03d}_issue_{n}_{ts}.log").write_text(usage + "\n")
         (rd / f"attempt_001_issue_1_{ts}_validation.txt").write_text("VERDICT: VETO\nreason\n")
+        (rd / f"attempt_003_issue_2_{ts}_validation.txt").write_text(
+            "PASS: tests (exit 0)\nSKIP sql tests (Docker not running)\n"
+            "SKIPPED: reviewer (an earlier gate failed)\n")
         (rd / "integrity" / "record_issue-1_attempt-2.json").write_text(json.dumps({
             "verdict": "pass", "status": "partial", "record_path": "docs/decisions/0001-imu.md",
             "findings": [{"severity": "WARN", "code": "oos_unexplained", "message": "x"}],
@@ -717,7 +748,10 @@ def self_test() -> int:
         check("#1 flagged: partial, warn, oos, removed, veto",
               all(s in att for s in ("**partial**", "consistency warning", "outside the issue's scope",
                                      "2 thing(s) removed, 1 still referenced", "vetoed 1")))
-        check("#2 not flagged", "Review #2" not in att)
+        check("#2 flagged only for its SQL skip", "Review #2" in att
+              and "SKIP sql tests (Docker not running)" in att and "earlier gate failed" not in att)
+        check("mid-run config change noted", "Config changed mid-run" in att
+              and "validate.json changed" in att)
         check("not handled quoted", "sensor unplugged mid-run" in att and "0x68" in att)
         check("built rows", "ten times a second" in text and "Polling is simpler" in text
               and "| #2 |" in text)

@@ -340,7 +340,11 @@ BUILTIN_AGENTS: dict[str, AgentSpec] = {
     "claude": AgentSpec(
         name="claude",
         exe_candidates=["claude.cmd", "claude.exe", "claude"],
+        # stream-json: one JSON event per line, with token usage (plain --print
+        # logs have none). The result block is pulled out of the final
+        # `result` event by stream_json_text() before parsing.
         argv=["{EXE}", "--model", "{MODEL}", "--print",
+              "--output-format", "stream-json", "--verbose",
               "--permission-mode", "bypassPermissions"],
         prompt_mode="stdin",
     ),
@@ -442,6 +446,10 @@ class RunState:
     env_blockers: dict[str, dict] = field(default_factory=dict)      # key -> blocker + issues
     deferred_blockers: dict[str, dict] = field(default_factory=dict) # issue -> blocker that parked it
     requeued: list[int] = field(default_factory=list)                # re-queued once after a fix
+    # sha256 of the config/validate/agent files and integrity/ at run start, and
+    # every change seen since (a mid-run change caused prompt/checker skew).
+    pinned: dict[str, str] = field(default_factory=dict)
+    pin_drift: list[str] = field(default_factory=list)
 
     @property
     def state_path(self) -> Path:
@@ -453,6 +461,48 @@ class RunState:
     @classmethod
     def load(cls, path: Path) -> "RunState":
         return cls(**json.loads(path.read_text(encoding="utf-8")))
+
+
+def _sha256_file(path: Path) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return "missing"
+
+
+def config_fingerprints(args) -> dict[str, str]:
+    """label -> sha256 of every file that shapes prompts or checks. The
+    integrity/ package is hashed over its sources (its VERSION rarely moves)."""
+    out: dict[str, str] = {}
+    for label, attr in (("project config", "config_path"), ("validate file", "validate"),
+                        ("agent file", "agent"), ("contract file", "contract_file")):
+        val = str(getattr(args, attr, "") or "")
+        if val and val not in BUILTIN_AGENTS:
+            out[f"{label} {val}"] = _sha256_file(Path(val))
+    idir = platform_root() / "integrity"
+    if idir.is_dir():
+        h = hashlib.sha256()
+        for f in sorted(idir.glob("*.py")):
+            h.update(f.name.encode() + b"\0" + f.read_bytes())
+        out["integrity/ package"] = h.hexdigest()
+    return out
+
+
+def check_pins(state: "RunState", current: dict[str, str]) -> list[str]:
+    """Record pins on first call; afterwards return (and remember) new changes."""
+    if not state.pinned:
+        state.pinned = dict(current)
+        return []
+    new: list[str] = []
+    for label, sha in current.items():
+        old = state.pinned.get(label)
+        if old is not None and old != sha:
+            note = f"{label} changed ({old[:10]} -> {sha[:10]}) before attempt {state.attempt}"
+            if not any(x.startswith(f"{label} changed ({old[:10]} -> {sha[:10]})")
+                       for x in state.pin_drift):
+                state.pin_drift.append(note)
+                new.append(note)
+    return new
 
 
 def resume_or_new_target(root: Path, repo: Path, git_exe: str) -> tuple[Optional[Path], str]:
@@ -641,6 +691,8 @@ Operating contract for the unattended coding agent:
 - Tests are required. Run focused tests for what you changed plus the repo's
   existing lint/build/test for the areas you touched.
 - Verify behaviour programmatically; do not claim success without evidence.
+- Report VALIDATION: PASS only if the tests actually ran. If any test or check
+  was skipped (e.g. SQL tests without Docker), name each one in NOTES.
 - Do not weaken, skip, or delete tests to make a check pass.
 """
 
@@ -702,7 +754,8 @@ NOTES: concise remaining risk/conflict, or NONE
 {spec.result_end}
 
 Use STATUS: COMPLETE and VALIDATION: PASS only when the work is truly ready for
-the supervisor's independent validation and commit.
+the supervisor's independent validation and commit. A skipped test is not a
+pass: report PASS only if the tests ran, and list anything skipped in NOTES.
 
 Use STATUS: BLOCKED only when the issue cannot be finished without something
 outside this repository that you may not install or configure: a system tool,
@@ -724,7 +777,34 @@ class AgentResult:
     summary: str = ""
 
 
+def stream_json_text(text: str) -> str:
+    """The agent's final text from Claude Code `--output-format stream-json`
+    output: the last `result` event's `result`, else the text of the last
+    assistant message. "" when the text holds no such events (codex, plain)."""
+    final: Optional[str] = None
+    last_assistant = ""
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            evt = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(evt, dict):
+            continue
+        if evt.get("type") == "result" and isinstance(evt.get("result"), str):
+            final = evt["result"]
+        elif evt.get("type") == "assistant" and isinstance(evt.get("message"), dict):
+            parts = [c.get("text", "") for c in evt["message"].get("content") or []
+                     if isinstance(c, dict) and c.get("type") == "text"]
+            if any(parts):
+                last_assistant = "\n".join(parts)
+    return final if final is not None and final.strip() else last_assistant
+
+
 def parse_agent_result(text: str, spec: AgentSpec) -> AgentResult:
+    text = stream_json_text(text) or text
     starts = [m.start() for m in re.finditer(re.escape(spec.result_begin), text)]
     if starts:
         block = text[starts[-1]:]
@@ -787,6 +867,23 @@ def humanize_event(line: str) -> Optional[str]:
             return f"  [command] {item['command']}"
     if typ == "error":
         return f"[agent error] {evt.get('message', evt)}"
+    # Claude Code stream-json
+    if typ == "assistant" and isinstance(evt.get("message"), dict):
+        out = []
+        for c in evt["message"].get("content") or []:
+            if not isinstance(c, dict):
+                continue
+            if c.get("type") == "text" and c.get("text"):
+                out.append(str(c["text"]))
+            elif c.get("type") == "tool_use":
+                inp = c.get("input") if isinstance(c.get("input"), dict) else {}
+                arg = inp.get("command") or inp.get("file_path") or inp.get("pattern") or ""
+                out.append(f"  [{c.get('name', 'tool')}] {str(arg)[:200]}")
+        return "\n".join(out) or None
+    if typ == "result":
+        u = evt.get("usage") or {}
+        return (f"[result] {evt.get('subtype', '')} turns={evt.get('num_turns', '?')} "
+                f"out_tokens={u.get('output_tokens', '?')}")
     return None
 
 
@@ -881,7 +978,7 @@ def run_agent_worker(*, repo: Path, spec: AgentSpec, exe: str, model: Optional[s
 # ===========================================================================
 
 def _looks_like_blocking_usage_message(text: str) -> bool:
-    lower = text.lower().strip()
+    lower = text.lower().replace("’", "'").strip()
     if not lower:
         return False
     if "approaching" in lower and "limit" in lower and not any(
@@ -894,6 +991,9 @@ def _looks_like_blocking_usage_message(text: str) -> bool:
         "quota exceeded", "too many requests",
         "http 429", "status 429", "error 429",
         "you've hit your limit", "you have hit your limit", "hit your usage limit",
+        # Claude Code: "You've hit your session limit · resets 1:20pm (Asia/Singapore)"
+        "hit your session limit", "session limit reached", "hit your weekly limit",
+        "weekly limit reached", "hit your opus limit",
     )
     return any(p in lower for p in explicit)
 
@@ -907,7 +1007,8 @@ def detect_usage_limit(text: str, *, worker_returncode: Optional[int] = None) ->
             evt = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if isinstance(evt, dict) and evt.get("type") == "error":
+        if isinstance(evt, dict) and (evt.get("type") == "error" or (
+                evt.get("type") == "result" and evt.get("is_error"))):
             if _looks_like_blocking_usage_message(json.dumps(evt, ensure_ascii=False)):
                 return True
     if worker_returncode is not None and worker_returncode != 0:
@@ -948,7 +1049,12 @@ def parse_reset_datetime(text: str, base: Optional[dt.datetime] = None) -> Optio
         if not m.group(3) and cand < base - dt.timedelta(days=2):
             cand = cand.replace(year=year + 1)
         return cand
-    # Codex: "... try again at 6:22 PM."
+    # Claude Code: "resets in 2h 15m" / "resets in 45 minutes".
+    m = re.search(r"(?i)(?<![\w./\\-])(?:resets?|try again)\s+in\s+(?:(\d+)\s*h(?:ours?|rs?)?)?\s*"
+                  r"(?:(\d+)\s*m(?:in(?:ute)?s?)?)?", text)
+    if m and (m.group(1) or m.group(2)):
+        return base + dt.timedelta(hours=int(m.group(1) or 0), minutes=int(m.group(2) or 0))
+    # Codex: "... try again at 6:22 PM."  Claude: "resets 1:20pm (Asia/Singapore)".
     m = re.search(r"(?i)\btry again at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", text)
     if not m:
         m = re.search(r"(?i)(?<![\w./\\-])resets?\b.{0,30}?(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b",
@@ -1215,6 +1321,177 @@ def independent_validation(repo: Path, tools: Tools, changed_files: list[str],
         run_entry(cmd, cwd, final=True)
 
     return ValidationResult(passed=passed, details="\n\n".join(details))
+
+
+# ===========================================================================
+# Environment preflight
+# ===========================================================================
+
+def run_preflight(entries: list, repo: Path, timeout_seconds: int = 120) -> list[str]:
+    """Run each {"label", "argv", "hint", "cwd"?, "timeout_seconds"?} once; return
+    one message per failure. An empty list means the environment is ready."""
+    failures: list[str] = []
+    for e in entries or []:
+        if not isinstance(e, dict) or not e.get("argv"):
+            continue
+        label = str(e.get("label") or " ".join(map(str, e["argv"])))
+        cwd = repo / e["cwd"] if e.get("cwd") else repo
+        argv = [sys.executable if a == "__PY__" else str(a) for a in e["argv"]]
+        exe = shutil.which(argv[0]) or argv[0]
+        try:
+            cp = run_capture([exe] + argv[1:], cwd=cwd, check=False,
+                             timeout=float(e.get("timeout_seconds") or timeout_seconds))
+            ok, out = cp.returncode == 0, cp.stdout
+            why = f"exit {cp.returncode}"
+        except subprocess.TimeoutExpired:
+            ok, out, why = False, "", "timed out"
+        except (FileNotFoundError, OSError) as exc:
+            ok, out, why = False, str(exc), "not runnable"
+        print(f"PREFLIGHT: {label}: {'ok' if ok else 'FAILED (' + why + ')'}", flush=True)
+        if not ok:
+            last = "\n".join(out.strip().splitlines()[-5:])
+            failures.append(f"{label} ({why})" + (f": {e['hint']}" if e.get("hint") else "")
+                            + (f"\n    {last}" if last else ""))
+    return failures
+
+
+# ===========================================================================
+# Validation feedback digest (what the next attempt is told)
+# ===========================================================================
+
+_GATE_HEADER_RE = re.compile(
+    r"^(PASS|FAIL|SKIPPED): (.+?)(?: \((?:exit -?\d+|timed out[^)]*|executable not found[^)]*|"
+    r"an earlier gate failed)\)| — cwd missing: .*)$")
+_FAIL_LINE_RES = [   # (priority, pattern); 1 = decisive, 2 = supporting
+    (1, re.compile(r"^\s*(FAILED|ERROR)\b")),
+    (1, re.compile(r"^E\s")),
+    (1, re.compile(r"relation \S+ does not exist|does not exist")),
+    (1, re.compile(r"^ACTION:")),
+    (2, re.compile(r"\bassert", re.IGNORECASE)),
+    (2, re.compile(r"\b\w*(Error|Exception)\b")),
+    (2, re.compile(r"error:", re.IGNORECASE)),
+    (2, re.compile(r"\bFAIL\b")),
+]
+RECORD_GATE_RE = re.compile(r"decision record", re.IGNORECASE)
+
+
+def split_gates(details: str) -> list[tuple[str, str, str]]:
+    """(status, label, output) per gate, from independent_validation's text."""
+    gates: list[list] = []
+    for line in details.splitlines():
+        m = _GATE_HEADER_RE.match(line)
+        if m:
+            gates.append([m.group(1), m.group(2), []])
+        elif gates:
+            gates[-1][2].append(line)
+    return [(st, lab, "\n".join(out).strip()) for st, lab, out in gates]
+
+
+def _errors_block(out: str) -> list[str]:
+    """The checker's 'ERRORS (must fix):' bullet list, verbatim."""
+    lines, grab = [], False
+    for line in out.splitlines():
+        if line.startswith("ERRORS (must fix)"):
+            grab = True
+            lines.append(line)
+            continue
+        if grab:
+            if line.startswith("  - ") or line.startswith("    "):
+                lines.append(line)
+                continue
+            grab = False
+    return lines
+
+
+def _gate_failure_lines(out: str, budget: int) -> str:
+    lines = out.splitlines()
+    picked: dict[int, int] = {}                    # line index -> priority
+    for i, line in enumerate(lines):
+        for prio, rx in _FAIL_LINE_RES:
+            if rx.search(line):
+                picked[i] = min(prio, picked.get(i, 9))
+                # Traceback: keep the last frame that raised it.
+                if prio == 2 and re.match(r"^\w[\w.]*(Error|Exception)\b", line):
+                    for j in range(i - 1, max(-1, i - 6), -1):
+                        if lines[j].lstrip().startswith('File "'):
+                            picked.setdefault(j, 2)
+                            break
+                break
+    for i, line in enumerate(lines):               # the checker's own verdict lines
+        if line.startswith(("ERRORS (must fix)", "DECISION RECORD:")):
+            picked[i] = 1
+    for line in _errors_block(out):
+        idx = lines.index(line) if line in lines else -1
+        if idx >= 0:
+            picked[idx] = 1
+    if not picked:
+        return ""
+    counts: dict[str, int] = {}
+    for i in picked:
+        counts[lines[i].strip()] = counts.get(lines[i].strip(), 0) + 1
+    out_lines: list[str] = []
+    used = 0
+    seen: set[str] = set()
+    for prio in (1, 2):
+        for i in sorted(picked):
+            if picked[i] != prio:
+                continue
+            key = lines[i].strip()
+            if key in seen:
+                continue
+            text = lines[i].rstrip()[:300]
+            if counts[key] > 1:
+                text += f"   (x{counts[key]})"
+            if used + len(text) + 1 > budget:
+                break
+            seen.add(key)
+            out_lines.append((i, text))
+            used += len(text) + 1
+    return "\n".join(t for _, t in sorted(out_lines))
+
+
+SKIP_LINE_RE = re.compile(r"^\s*(SKIP|SKIPPED)\b(?!: .* \(an earlier gate failed\)$)")
+
+
+def skip_lines(details: str, limit: int = 12) -> list[str]:
+    """Distinct SKIP lines in validation output (a skipped check is not a pass)."""
+    out: list[str] = []
+    for line in details.splitlines():
+        t = line.strip()
+        if SKIP_LINE_RE.match(line) and t not in out:
+            out.append(t[:200])
+    return out[:limit]
+
+
+def validation_feedback(details: str, validation_path: str = "", cap: int = 2200) -> str:
+    """A short digest of a failed validation for the next attempt: for each
+    FAILED gate, its label and the lines that say why. Replaces a blind tail,
+    which cut the decisive line out (#32). Falls back to the tail."""
+    gates = split_gates(details)
+    failed = [g for g in gates if g[0] == "FAIL"]
+    passed = [g[1] for g in gates if g[0] == "PASS"]
+    where = (f"\nFull validation output: {validation_path}" if validation_path else "")
+    if failed and all(RECORD_GATE_RE.search(lab) for _, lab, _ in failed):
+        errs = "\n".join(_errors_block(failed[0][2])) or _gate_failure_lines(failed[0][2], 1200)
+        act = "\n".join(l for l in failed[0][2].splitlines() if l.startswith("ACTION:"))
+        return ("Independent validation: every code gate PASSED; only the decision record "
+                "failed. The implementation is already validated: do NOT redo or re-test "
+                "it. Fix only the decision record and report COMPLETE / PASS.\n"
+                f"Passed gates: {', '.join(passed) or '(none)'}\n"
+                f"FAIL: {failed[0][1]}\n{errs}\n{act}".rstrip() + where)
+    if not failed:
+        return "Independent validation failed:\n" + details[-min(cap, 1500):] + where
+    head = (f"Independent validation failed. Passed gates: {', '.join(passed) or '(none)'}\n")
+    skips = skip_lines(details, 6)
+    if skips:
+        head += ("Skipped checks (not validated):\n"
+                 + "\n".join(f"  {x}" for x in skips) + "\n")
+    budget = max(400, (cap - len(head)) // len(failed))
+    parts = []
+    for _, label, out in failed:
+        body = _gate_failure_lines(out, budget) or out[-budget:]
+        parts.append(f"FAIL: {label}\n{body}")
+    return (head + "\n\n".join(parts))[:cap + 200] + where
 
 
 # ===========================================================================
@@ -1512,6 +1789,19 @@ def supervisor(args) -> int:
           f"Closing: {'on PR merge (Closes #N)' if args.close_on == 'merge' else 'on commit'}\n"
           f"Safety:  agent edits; Python validates/commits; never pushes unless asked.\n")
 
+    pre = run_preflight(getattr(args, "preflight", []) or [], repo)
+    if pre:
+        msg = ("Environment preflight failed; no agent was launched. Fix this, then rerun:\n  - "
+               + "\n  - ".join(pre))
+        print_err(msg)
+        state.status = "stopped"
+        state.save()
+        emit_run_result(reason="preflight_failed", status="stopped", detail=msg,
+                        run_dir=state.run_dir)
+        return 1
+    check_pins(state, config_fingerprints(args))
+    state.save()
+
     invocation_start = time.monotonic()
     stop_event = threading.Event()
     end_reason = "interrupted"
@@ -1568,6 +1858,9 @@ def supervisor(args) -> int:
         issue = ready[0]                    # ascending -> lowest open unblocked number
         nkey = str(issue.number)
         state.attempt += 1
+        for note in check_pins(state, config_fingerprints(args)):
+            print(f"WARNING: {note}. Prompts or checks now differ from the run start; "
+                  "do not change the config mid-run.", flush=True)
         state.current_issue = issue.number
         state.save()
 
@@ -1621,6 +1914,9 @@ def supervisor(args) -> int:
                 break
             continue
 
+        final_text = stream_json_text(outcome.output_text)
+        if final_text and not last_path.exists():
+            last_path.write_text(final_text, encoding="utf-8")
         result = parse_agent_result(combined, spec)
         changed_files = get_changed_files(repo, tools.git)
         dirty_after = get_dirty_status(repo, tools.git)
@@ -1884,6 +2180,101 @@ def self_test() -> int:
     check("parse blocker + needs", rb.blocker == "MISSING_SDK"
           and rb.needs == "Android SDK (ANDROID_HOME)" and rb.summary == "no sdk")
     check("result without BLOCKER line still parses", r.blocker == "" and r.needs == "")
+
+    # Claude Code stream-json: the result block sits JSON-escaped in the result event.
+    block = (f"{spec.result_begin}\nSTATUS: COMPLETE\nVALIDATION: PASS\nISSUE: #5\n"
+             f"SUMMARY: ok\nNOTES: NONE\n{spec.result_end}")
+    stream = "\n".join(json.dumps(e) for e in (
+        {"type": "system", "subtype": "init", "session_id": "s"},
+        {"type": "assistant", "message": {"id": "m1", "content": [
+            {"type": "tool_use", "name": "Bash", "input": {"command": "pytest -q"}}],
+            "usage": {"input_tokens": 3, "output_tokens": 5}}},
+        {"type": "assistant", "message": {"id": "m2", "content": [
+            {"type": "text", "text": "done\n" + block}]}},
+        {"type": "rate_limit_event", "rate_limit_info": {"status": "allowed"}},
+        {"is_error": False, "num_turns": 2, "subtype": "success", "result": "done\n" + block,
+         "type": "result", "usage": {"input_tokens": 3, "output_tokens": 9}}))
+    rs = parse_agent_result(stream, spec)
+    check("stream-json result block parsed", rs.status == "COMPLETE" and rs.validation == "PASS")
+    check("stream-json text extracted", stream_json_text(stream).startswith("done"))
+    check("stream-json falls back to assistant text",
+          stream_json_text(stream.rsplit("\n", 1)[0]).endswith(spec.result_end))
+    check("non-stream text untouched", stream_json_text("plain\nSTATUS: X") == "")
+    check("humanize claude tool_use", humanize_event(stream.splitlines()[1]) == "  [Bash] pytest -q")
+    check("rate_limit_event 'allowed' is not a limit",
+          not detect_usage_limit(stream, worker_returncode=1))
+    check("claude builtin uses stream-json",
+          "stream-json" in BUILTIN_AGENTS["claude"].argv and "--verbose" in BUILTIN_AGENTS["claude"].argv)
+
+    # Claude Code session limit (exact text from the #92 log, run 20261009-215350).
+    sl = "You've hit your session limit \u00b7 resets 1:20pm (Asia/Singapore)"
+    check("session limit is blocking", _looks_like_blocking_usage_message(sl))
+    check("curly-quote session limit is blocking",
+          _looks_like_blocking_usage_message(sl.replace("'", "\u2019")))
+    check("session limit detected on exit", detect_usage_limit(sl + "\n", worker_returncode=1))
+    sl_evt = json.dumps({"type": "result", "is_error": True, "result": sl})
+    check("session limit in stream-json result", detect_usage_limit(sl_evt, worker_returncode=0))
+    _b = dt.datetime(2026, 10, 10, 9, 0)
+    _r = parse_reset_datetime(sl, base=_b)
+    check("session limit reset parsed", _r is not None and (_r.hour, _r.minute) == (13, 20))
+    check("resets 5pm parsed", (parse_reset_datetime(
+        "You've hit your session limit \u00b7 resets 5pm (Asia/Singapore)", base=_b) or _b).hour == 17)
+    check("resets in 2h 15m parsed", parse_reset_datetime(
+        "usage limit reached, resets in 2h 15m", base=_b) == _b + dt.timedelta(hours=2, minutes=15))
+    check("approaching session limit is not blocking",
+          not _looks_like_blocking_usage_message("You are approaching your session limit"))
+
+    # Validation feedback: the decisive line survives; record-only failures say so.
+    noisy = ("PASS: lint (exit 0)\nok\n\nPASS: migrations (exit 0)\nSKIP local migrations (stack down)\n\n"
+             "FAIL: tests (exit 1)\n" + "passing line\n" * 2000
+             + 'E   psycopg.errors.UndefinedTable: relation "public.x" does not exist\n'
+             + "FAILED tests/sql/test_x.py::test_a\n" + "flutter tail\n" * 300)
+    fb = validation_feedback(noisy, "C:/runs/v.txt")
+    check("feedback keeps the decisive line", 'relation "public.x" does not exist' in fb
+          and "FAILED tests/sql/test_x.py::test_a" in fb)
+    check("feedback is short", len(fb) < 2600)
+    check("feedback names the gate and the file", "FAIL: tests" in fb and "C:/runs/v.txt" in fb)
+    check("feedback lists skips", "SKIP local migrations (stack down)" in fb)
+    check("feedback falls back to tail", "flutter tail" in validation_feedback(
+        "FAIL: build (exit 2)\n" + "flutter tail\n" * 50))
+    rec = ("PASS: tests (exit 0)\nok\n\nFAIL: decision record (exit 1)\n"
+           "DECISION RECORD: FAIL (enforce mode) - docs/decisions/0027-x.md: 1 error(s)\n"
+           "ERRORS (must fix):\n  - missing section(s): Key parameters\n"
+           "ACTION: add the missing section(s)\nWARNINGS (not blocking):\n  - w\n\n"
+           "SKIPPED: adversary (an earlier gate failed)")
+    fr = validation_feedback(rec)
+    check("record-only retry says so", "only the decision record" in fr
+          and "do NOT redo" in fr and "missing section(s): Key parameters" in fr
+          and "ACTION: add the missing" in fr and "  - w" not in fr)
+    check("mixed failure is not record-only", "only the decision record" not in
+          validation_feedback(rec.replace("PASS: tests", "FAIL: tests")))
+    check("skip lines ignore cascade skips", skip_lines(rec) == [])
+
+    # Preflight: a failing check stops the run with its hint.
+    _pf = run_preflight([{"label": "ok", "argv": [sys.executable, "-c", "pass"]},
+                         {"label": "docker", "argv": [sys.executable, "-c", "raise SystemExit(3)"],
+                          "hint": "start Docker Desktop"},
+                         {"label": "gone", "argv": ["no-such-tool-xyz"]}], Path.cwd())
+    check("preflight reports failures with hints", len(_pf) == 2
+          and "docker (exit 3): start Docker Desktop" in _pf[0] and "gone" in _pf[1])
+    check("empty preflight passes", run_preflight([], Path.cwd()) == [])
+
+    # Pinned config: the first call pins, a later change is reported once.
+    with tempfile.TemporaryDirectory() as _td:
+        _cfg = Path(_td) / "c.json"
+        _cfg.write_text("{}")
+        _ns = argparse.Namespace(config_path=str(_cfg), validate="", agent="claude",
+                                 contract_file="")
+        _st = RunState("r", "o/r", "b", _td, [1], {"1": "x"}, "t")
+        check("pins recorded", check_pins(_st, config_fingerprints(_ns)) == []
+              and any("project config" in k for k in _st.pinned)
+              and "integrity/ package" in _st.pinned)
+        check("unchanged config: no drift", check_pins(_st, config_fingerprints(_ns)) == [])
+        _cfg.write_text('{"x": 1}')
+        _d = check_pins(_st, config_fingerprints(_ns))
+        check("changed config reported", len(_d) == 1 and "project config" in _d[0])
+        check("change reported once", check_pins(_st, config_fingerprints(_ns)) == []
+              and len(_st.pin_drift) == 1)
     failures.extend(blk.self_test())
 
     # A parked issue comes back once its blocker's probe passes, and only once.
@@ -2454,6 +2845,7 @@ def main() -> int:
         cli_repo = args.repo
         apply_config(args, config)
         args.blocker_rules = config.get("blockers") or []
+        args.preflight = config.get("preflight") or []
         if config_path:
             print(f"Using project config: {config_path}", flush=True)
             args.config_path = str(config_path)

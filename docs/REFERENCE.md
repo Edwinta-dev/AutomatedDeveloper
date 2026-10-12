@@ -13,6 +13,7 @@ The [README](../README.md) covers everyday use. This page is the detail behind i
 - [Dangling reference check](#dangling-reference-check)
 - [Decision record check](#decision-record-check)
 - [Environment blockers](#environment-blockers)
+- [Environment preflight](#environment-preflight)
 - [Run digest](#run-digest)
 - [Overnight sessions and usage limits](#overnight-sessions-and-usage-limits)
 - [Creating issues](#creating-issues)
@@ -60,6 +61,7 @@ Relative paths in the config resolve next to the config file. Any command-line f
 | `run.push`, `run.open_pr` | `false` | Push the branch / open a PR at the end of the run |
 | `env_blocker_halt_after` | `3` | Stop the run when one blocker has parked this many issues (`0` = never) |
 | `blockers` | `[]` | Project-specific blocker rules. See [Environment blockers](#environment-blockers) |
+| `preflight` | `[]` | Environment checks run once at the start of every run. See [Environment preflight](#environment-preflight) |
 | `adversary` | | See [The adversarial reviewer](#the-adversarial-reviewer) |
 | `ml` | | ML projects only. See [The ML gate](#the-ml-gate) |
 | `scope` | `mode: report` | Scope-gate settings. See [Scope gate](#scope-gate) |
@@ -76,6 +78,12 @@ Describes how to launch the agent. `{EXE}`, `{MODEL}` and `{LAST_MSG}` are fille
 | `result_begin` / `result_end` | Markers around the agent's final result block (`STATUS:`, `BLOCKER:`, `NOTES:` ...) |
 | `prompt_prefix` | Text, or `{"file": "project_rules.md"}`, placed near the top of every prompt |
 | `prompt_suffix` | Text placed just before the result block, e.g. "run the full test suite before declaring COMPLETE" |
+
+For Claude Code, keep `--print` and add `--output-format stream-json --verbose` (the builtin `claude` agent does). The log then carries token usage for `compare_runs.py` and the digest, and the supervisor reads the result block from the final `result` event (it also writes that text to `<attempt>_last.txt`).
+
+**Retry feedback.** When validation fails, the next attempt is told, for each failed gate, its label and the lines that say why (`FAILED`, `E `, `Error`, `assert`, `... does not exist`, the record checker's `ERRORS (must fix)` and `ACTION` lines), plus any `SKIP` lines, in about 2 KB. The full output stays in `<attempt>_validation.txt`, and the feedback gives its path. If only the decision record failed, the next attempt is told the code is already validated and to fix only the record.
+
+**Pinned config.** At run start the runner stores the sha256 of the project config, validate file, agent file, contract file and the `integrity/` sources in `supervisor_state.json` (`pinned`). If one changes mid-run, the next attempt prints a warning, the change is kept in `pin_drift`, and the digest lists it under "Needs your attention". The run does not stop.
 
 ## Branching
 
@@ -251,9 +259,22 @@ Add project-specific rules in the config:
 
 `probe_argv` exiting 0 means the dependency is present. Kinds an agent may declare: `MISSING_TOOL`, `MISSING_SDK`, `PERMISSION`, `CREDENTIALS`, `EXTERNAL_SERVICE`, `PLATFORM`, `HARDWARE`, `UNKNOWN`.
 
+## Environment preflight
+
+`preflight` in the project config lists commands that must succeed before any agent is launched, for example a running Docker daemon or a local database stack. They run once at the start of every run, so once per session slice. Each runs with the repo as the working directory (or `cwd`, relative to the repo); `__PY__` is the runner's Python. `v2.py check` runs the same list:
+
+```json
+"preflight": [
+  {"label": "Docker running", "argv": ["docker", "info"], "hint": "start Docker Desktop", "timeout_seconds": 60},
+  {"label": "local Supabase stack", "argv": ["supabase", "status"], "hint": "run `supabase start` in the repo"}
+]
+```
+
+If any fails (non-zero exit, timeout, or the executable is missing), the run stops before spending agent time, prints each failure with its hint, and ends with `RUN_RESULT {"reason": "preflight_failed", "detail": ...}`. `v2.py run` treats that as "needs a human" (exit 2). Fix the environment and rerun: the run resumes. Default timeout: 120 s.
+
 ## Run digest
 
-At the end of every run the runner writes `DIGEST.md` into the run dir and prints its path: one page for a person coming back to an unattended run. It lists, in order: the outcome; **what needs your attention** (environment blockers, set-aside issues with the reason and what to do, issues waiting on dependencies, and committed issues whose decision record or integrity checks flag something: partial/blocked status, consistency warnings, unexplained out-of-scope changes, unverified changes, removed symbols, reviewer vetoes, "Not handled" edge cases and assumptions); **what was built** (one row per committed issue with the record's "In short", trade-off, record path and commit); decisions grouped by component tag (or top-level folder); how to respond; tokens and data gaps. Runs that predate decision or integrity records still get a digest, with the gaps stated.
+At the end of every run the runner writes `DIGEST.md` into the run dir and prints its path: one page for a person coming back to an unattended run. It lists, in order: the outcome; **what needs your attention** (environment blockers, set-aside issues with the reason and what to do, issues waiting on dependencies, and committed issues whose decision record or integrity checks flag something: partial/blocked status, consistency warnings, unexplained out-of-scope changes, unverified changes, removed symbols, reviewer vetoes, checks the runner's validation SKIPped, config files that changed mid-run, "Not handled" edge cases and assumptions); **what was built** (one row per committed issue with the record's "In short", trade-off, record path and commit); decisions grouped by component tag (or top-level folder); how to respond; tokens and data gaps. Runs that predate decision or integrity records still get a digest, with the gaps stated.
 
 ```
 python v2.py digest <Project>                       # latest run of that project's repo
@@ -275,14 +296,14 @@ A digest failure is reported as a warning and never fails the run.
 | `usage_limit` | Pauses until the reported reset (or `--usage-fallback-minutes`), then resumes |
 | `all_closed` | The next slice starts a fresh run, picking up newly filed issues |
 | `no_work` | Stops: the project is complete (exit 0) |
-| `all_deferred` / `all_blocked` / `env_blocked` | Stops: a human is needed (exit 2) |
+| `all_deferred` / `all_blocked` / `env_blocked` / `preflight_failed` | Stops: a human is needed (exit 2) |
 | No result (crash) | Retries with backoff. Gives up after 3 crashes in a row (exit 1) |
 | Slice overran | Killed at slice + grace (`max_session_minutes` + 15). The next slice resumes |
 
 **Usage tracking** (`python v2.py usage`):
 
 - **Codex** logs its real 5-hour and weekly plan-limit percentages and reset times. `run` checks them before every slice and pauses at 97% (`--max-percent`).
-- **Claude Code** logs only token counts locally, so its limit is handled when it's hit: the run exits on the limit message and pauses until the reset time in that message. For live percentages, run `claude` and type `/usage` (or `codex` then `/status`).
+- **Claude Code** logs only token counts locally, so its limit is handled when it's hit: the run exits on the limit message (`You've hit your session limit · resets 1:20pm (Asia/Singapore)`, usage/weekly-limit variants, `resets in 2h 15m`) and pauses until the reset time in that message. For live percentages, run `claude` and type `/usage` (or `codex` then `/status`).
 
 `v2.py run` options: `--once` (one slice), `--max-hours N` (total budget, `0` = until done), `--fresh` (forget this project's session state), `--slice-minutes`, `--grace-minutes`, `--provider`, `--provider-probe`, `--max-percent`, `--usage-fallback-minutes`. Any other flag is passed through to `run_issues.py`.
 

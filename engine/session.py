@@ -54,7 +54,7 @@ IS_WINDOWS = os.name == "nt"
 # RUN_RESULT reasons (see run_issues.finalize) and what the session does next.
 CONTINUE_REASONS = {"max_hours", "all_closed"}      # all_closed: next slice freezes a new run
 DONE_REASONS = {"no_work"}
-NEEDS_HUMAN_REASONS = {"all_deferred", "all_blocked", "env_blocked"}
+NEEDS_HUMAN_REASONS = {"all_deferred", "all_blocked", "env_blocked", "preflight_failed"}
 MAX_CONSECUTIVE_ERRORS = 3
 
 
@@ -100,6 +100,8 @@ def decide(result: Optional[dict], returncode: int, killed: bool) -> tuple[str, 
         return "park", "provider usage limit"
     if reason in DONE_REASONS:
         return "done", result.get("detail") or "no matching open issues"
+    if reason == "preflight_failed":
+        return "needs_human", result.get("detail") or "environment preflight failed"
     if reason in NEEDS_HUMAN_REASONS:
         why = (f"{reason.replace('_', ' ')}: deferred "
                f"{result.get('deferred') or []}, {result.get('blocked', 0)} blocked")
@@ -394,6 +396,9 @@ def self_test() -> int:
           decide(parse_run_result(out), 0, False)[0] == "continue")
     check("usage_limit parks",
           decide({"reason": "usage_limit", "usage_reset": None}, USAGE_LIMIT_EXIT, False)[0] == "park")
+    check("preflight_failed needs a human, with its message",
+          decide({"reason": "preflight_failed", "detail": "Docker (exit 1): start Docker"}, 1, False)
+          == ("needs_human", "Docker (exit 1): start Docker"))
     check("no_work is done", decide({"reason": "no_work"}, 1, False)[0] == "done")
     check("all deferred needs a human",
           decide({"reason": "all_deferred", "deferred": [3]}, 0, False)[0] == "needs_human")
