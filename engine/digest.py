@@ -29,6 +29,9 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import compare_runs as cr  # noqa: E402
+# Record parsing helpers (stdlib only; integrity never imports engine, not the reverse).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "integrity"))
+from brief import UNVERIFIED_RE, _bullets, not_handled  # noqa: E402
 
 DIGEST_NAME = "DIGEST.md"
 DECISIONS_DIR = "docs/decisions"
@@ -53,6 +56,19 @@ class Decision:
     sections: dict = field(default_factory=dict)   # lower-case heading -> body
     tags: list = field(default_factory=list)
     warnings: list = field(default_factory=list)   # WARN lines from the facts block
+    warn_total: Optional[int] = None               # "N warning(s)" from the facts block
+    checks: str = ""                               # "Supervisor checks passed" line
+
+    def not_handled(self) -> list:
+        return not_handled(self.section("edge cases"))
+
+    def not_verified(self) -> list:
+        nv = self.section("not verified")
+        if nv:
+            items = [x.strip().lstrip("-*+ ").strip() for x in _bullets(nv)]
+            return [x for x in items if x and not re.match(r"(?i)^(none|n/?a)\b", x)]
+        return [re.sub(r"(?i)^\**\s*not verified\s*:?\s*\**\s*", "", x.strip().lstrip("-*+ ").strip())
+                for x in _bullets(self.section("how it was verified")) if UNVERIFIED_RE.search(x)]
 
     def section(self, prefix: str) -> str:
         for k, v in self.sections.items():
@@ -116,7 +132,14 @@ def parse_decision(path: str, text: str) -> Decision:
         heading, _, body = chunk.partition("\n")
         d.sections[heading.strip().lower()] = body.strip()
     tags: list = []
-    for line in facts.splitlines():
+    flines = facts.splitlines()
+    for i, line in enumerate(flines):
+        if line.strip() == "**Supervisor checks passed**":
+            d.checks = next((x.strip() for x in flines[i + 1:] if x.strip()), "")
+        m = re.match(r"^\d+ error\(s\), (\d+) warning\(s\)", line.strip())
+        if m:
+            d.warn_total = int(m.group(1))
+    for line in flines:
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
         if line.lstrip().startswith("|") and len(cells) >= 5 and cells[0].startswith("`"):
             for t in cells[3].split(","):
@@ -466,12 +489,6 @@ def attention_items(d: Digest) -> list:
         status = (v.decision.status if v.decision else "") or (v.integ.get("record") or {}).get("status", "")
         if status in ("partial", "blocked"):
             reasons.append(f"the record says the work is **{status}**")
-        warns = list(v.decision.warnings) if v.decision else []
-        if not warns:
-            warns = [f.get("message", "") for f in (v.integ.get("record") or {}).get("findings") or []
-                     if f.get("severity") == "WARN"]
-        if warns:
-            reasons.append(f"{len(warns)} consistency warning(s), e.g. \"{_short(warns[0], 110)}\"")
         oos = (v.integ.get("record") or {}).get("out_of_scope") or {}
         unexpl = [i for i in oos.get("items") or [] if isinstance(i, dict) and not i.get("explained")]
         sc = v.integ.get("scope") or {}
@@ -485,9 +502,9 @@ def attention_items(d: Digest) -> list:
         rs = v.integ.get("refs") or {}
         rem = (rs.get("counts") or {}).get("removed_symbols") or \
             ((v.integ.get("record") or {}).get("removed_symbols") or {}).get("total") or 0
-        if rem:
-            dang = (rs.get("counts") or {}).get("dangling") or 0
-            reasons.append(f"{rem} thing(s) removed" + (f", {dang} still referenced elsewhere" if dang else ""))
+        dang = (rs.get("counts") or {}).get("dangling") or 0
+        if rem and dang:
+            reasons.append(f"{rem} thing(s) removed, {dang} still referenced elsewhere")
         if v.vetoes:
             reasons.append(f"the reviewer vetoed {v.vetoes} attempt(s) before it passed")
         if v.skips:
@@ -497,17 +514,18 @@ def attention_items(d: Digest) -> list:
             items.append((3, f"**Review #{n} {v.title}**: " + "; ".join(reasons) + "."
                              + (f" Record: {link}" if link else "")))
         if v.decision:
-            nh = [ln.strip().lstrip("-* ").strip() for ln in v.decision.section("edge cases").splitlines()
-                  if re.match(r"(?i)^\s*[-*]?\s*not handled", ln)]
-            asm = _first_line(v.decision.section("assumptions"), 130)
-            bits = []
+            def quote(xs, k=2):
+                more = f" (+{len(xs) - k} more)" if len(xs) > k else ""
+                return "; ".join(f"\"{_short(x, 120)}\"" for x in xs[:k]) + more
+            nv = v.decision.not_verified()
+            if nv:
+                items.append((4, f"#{n} not verified: {quote(nv)} ({link})"))
+            nh = v.decision.not_handled()
             if nh:
-                nh0 = _short(re.sub(r"(?i)^not handled:?\s*", "", nh[0]), 130)
-                bits.append(f"not handled: \"{nh0}\"")
+                items.append((5, f"#{n} not handled: {quote(nh)} ({link})"))
+            asm = _first_line(v.decision.section("assumptions"), 130)
             if asm and not re.match(r"(?i)^(none|no assumptions)", asm):
-                bits.append(f"assumes: \"{asm}\"")
-            if bits:
-                items.append((4, f"#{n}: " + "; ".join(bits) + f" ({link})"))
+                items.append((6, f"#{n} assumes: \"{asm}\" ({link})"))
     items.sort(key=lambda x: x[0])
     return items
 
@@ -557,7 +575,8 @@ def render(d: Digest) -> str:
 
     L += ["## What was built", ""]
     if done:
-        L += ["| # | Title | In short | Trade-off | Record | Commit |", "|---|---|---|---|---|---|"]
+        L += ["| # | Title | In short | Trade-off | Checks passed | Warn | Record | Commit |",
+              "|---|---|---|---|---|---|---|---|"]
         for v in sorted(done, key=lambda x: x.number):
             dec = v.decision
             short = _short(dec.section("in short"), 230) if dec else ""
@@ -565,7 +584,14 @@ def render(d: Digest) -> str:
                 subj = re.sub(r"(?i)^issue #\d+:\s*", "", v.subject or "").strip()
                 short = "(no record)" if not subj or subj == v.title else f"(no record) {subj}"
             trade = _first_line(dec.section("trade-off"), 140) if dec else ""
+            rj = v.integ.get("record") or {}
+            checks = ", ".join(rj.get("gates_passed") or []) or (dec.checks if dec else "")
+            checks = "" if checks in ("not available", "none") else checks
+            nw = (rj.get("counts") or {}).get("WARN")
+            if nw is None and dec:
+                nw = dec.warn_total if dec.warn_total is not None else len(dec.warnings)
             L.append(f"| #{v.number} | {cr_cell(v.title)} | {cr_cell(short)} | {cr_cell(trade) or '-'} | "
+                     f"{cr_cell(checks) or '-'} | {nw if nw is not None else '-'} | "
                      f"{cr_cell(_rec_link(v)) or '-'} | `{v.sha[:8] or '?'}` |")
     else:
         L.append("Nothing was committed in this run.")
@@ -676,7 +702,8 @@ def self_test() -> int:
         facts1 = ("<!-- verified-facts:begin (generated by integrity record; do not edit) -->\n"
                   "## Verified facts\n\n| Component | Change | Lines +/- | Tags | Description |\n"
                   "|---|---|---|---|---|\n| `src/sensors/imu.py::read` | modified | +3/-1 | "
-                  "sensors, embedded | Read IMU. |\n\n**Consistency**\n\n0 error(s), 1 warning(s)\n"
+                  "sensors, embedded | Read IMU. |\n\n**Supervisor checks passed**\n\ntests, record\n\n"
+                  "**Consistency**\n\n0 error(s), 1 warning(s)\n"
                   "- WARN: `src/sensors/imu.py::calib` changed but not mentioned\n"
                   "<!-- verified-facts:end -->\n")
         rec1 = ("# 0001: IMU reader\n\nStatus: partial · Issue: #1 · Date: 2026-10-09\n\n"
@@ -684,7 +711,8 @@ def self_test() -> int:
                 "## Trade-offs\nPolling is simpler than interrupts but wastes some power.\n\n"
                 "## Assumptions\n- The sensor is always on the I2C bus at address 0x68.\n\n"
                 "## Edge cases\n- Handled: sensor unplugged at start.\n"
-                "- Not handled: sensor unplugged mid-run; readings freeze silently.\n\n" + facts1)
+                "- **Not handled:**\n  - sensor unplugged mid-run; readings freeze silently.\n\n"
+                "## Not verified\n- Drift after an hour.\n\n" + facts1)
         rec2 = ("# 0002: Motor limits\n\nStatus: implemented · Issue: #2\n\n## In short\n"
                 "Motors now stop at a safe speed limit.\n\n## Trade-offs\nNone.\n\n"
                 "## Assumptions\nNone.\n\n## Edge cases\n- Handled: all.\n\n"
@@ -745,9 +773,15 @@ def self_test() -> int:
         check("env blocker first", att.strip().startswith("1. **Set up the environment**")
               and "pip install opencv-python" in att)
         check("deferred issue listed", "#3 Camera was set aside" in att)
-        check("#1 flagged: partial, warn, oos, removed, veto",
-              all(s in att for s in ("**partial**", "consistency warning", "outside the issue's scope",
-                                     "2 thing(s) removed, 1 still referenced", "vetoed 1")))
+        check("#1 flagged: partial, oos, dangling, veto; warnings not ranked",
+              all(s in att for s in ("**partial**", "outside the issue's scope",
+                                     "2 thing(s) removed, 1 still referenced", "vetoed 1"))
+              and "consistency warning" not in att)
+        check("warning count column + checks passed", "| Checks passed | Warn |" in text
+              and "| tests, record | 1 |" in text)
+        check("rank order: review < not verified < not handled < assumes",
+              att.index("Review #1") < att.index("#1 not verified") < att.index("#1 not handled")
+              < att.index("#1 assumes"))
         check("#2 flagged only for its SQL skip", "Review #2" in att
               and "SKIP sql tests (Docker not running)" in att and "earlier gate failed" not in att)
         check("mid-run config change noted", "Config changed mid-run" in att

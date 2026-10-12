@@ -50,5 +50,11 @@
     "//": "Decision record check (integrity/integrity.py record): the issue's record (docs/decisions/NNNN-slug.md) must exist with every section; the check appends a tool-verified facts block and warns where the rationale and the diff disagree. Enforce fails only on a missing record or missing sections.",
     "mode": "enforce",
     "dir": "docs/decisions"
+  },
+  "brief": {
+    "//": "Before each attempt on an issue with a **Scope:** line, the runner runs integrity/integrity.py brief and puts slices of earlier decision records for those components (Traps, Assumptions, Not handled, Key parameters, Not verified for bug/fix/regression issues; Traps, Alternatives, Trade-offs, To change this otherwise) just after the issue text, as hypotheses to check, not proof. mode: auto | debug | feature. A failure only skips the brief.",
+    "enabled": true,
+    "mode": "auto",
+    "max_words": 600
   }
 }

@@ -572,6 +572,7 @@ def find_latest_resumable_state(root: Path, repo: Optional[Path] = None,
 class Issue:
     number: int
     title: str
+    labels: list = field(default_factory=list)
 
 
 @dataclass
@@ -621,7 +622,8 @@ def list_matching_issues(repo: Path, tools: Tools, repo_name: str,
              "--state", "open", "--limit", str(limit),
              "--json", "number,title,milestone,labels")
     data = json.loads(raw or "[]")
-    result = [Issue(int(x["number"]), str(x["title"]))
+    result = [Issue(int(x["number"]), str(x["title"]),
+                    [str(lb.get("name", "")) for lb in x.get("labels") or [] if isinstance(lb, dict)])
               for x in data if _issue_matches(x, f)]
     return sorted(result, key=lambda x: x.number)   # ascending = execution order
 
@@ -697,9 +699,56 @@ Operating contract for the unattended coding agent:
 """
 
 
+BRIEF_DEFAULTS = {"enabled": False, "mode": "auto", "max_words": 600}
+SCOPE_LINE_RE = re.compile(r"(?im)^\s*\**\s*Scope\s*:\s*\**")
+BUG_WORDS_RE = re.compile(r"(?i)\b(bug|fix|fixes|fixed|regression)\b")
+
+
+def brief_mode(issue: Issue, configured: str = "auto") -> str:
+    """debug for bug/fix/regression issues (title or labels), else feature."""
+    if configured in ("debug", "feature"):
+        return configured
+    hay = " ".join([issue.title] + list(issue.labels or []))
+    return "debug" if BUG_WORDS_RE.search(hay) else "feature"
+
+
+def make_brief(repo: Path, issue: Issue, issue_text: str, cfg: Optional[dict],
+               python: str = sys.executable, config_path: str = "",
+               run_dir: Optional[Path] = None) -> str:
+    """Slices of earlier decision records for the issue's Scope (integrity brief, run as a
+    subprocess like the gates; never imported). Any failure -> "" with one log line."""
+    c = dict(BRIEF_DEFAULTS, **(cfg or {}))
+    if not c.get("enabled") or not SCOPE_LINE_RE.search(issue_text or ""):
+        return ""
+    mode = brief_mode(issue, str(c.get("mode") or "auto"))
+    tool = harness_dir().parent / "integrity" / "integrity.py"
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            f = Path(run_dir or td) / f"brief_issue_{issue.number}.md"
+            f.write_text(f"# #{issue.number} {issue.title}\n\n{issue_text}", encoding="utf-8")
+            argv = [python, str(tool), "brief", "--repo", str(repo), "--issue-file", str(f),
+                    "--mode", mode, "--max-words", str(int(c.get("max_words") or 600))]
+            if config_path:
+                argv += ["--config", config_path]
+            cp = subprocess.run(argv, cwd=str(repo), stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, timeout=120)
+        if cp.returncode != 0:
+            print(f"Brief skipped for #{issue.number}: "
+                  f"{cp.stderr.decode('utf-8', 'replace').strip()[:200] or 'exit ' + str(cp.returncode)}",
+                  flush=True)
+            return ""
+        out = cp.stdout.decode("utf-8", "replace").strip()
+        if out:
+            print(f"Brief for #{issue.number} ({mode}): {len(out.split())} words", flush=True)
+        return out
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        print(f"Brief skipped for #{issue.number}: {exc}", flush=True)
+        return ""
+
+
 def make_prompt(repo_name: str, issue: Issue, issue_text: str,
                 contract: str, spec: AgentSpec,
-                dirty_status: str, previous_failure: str) -> str:
+                dirty_status: str, previous_failure: str, brief: str = "") -> str:
     dirty = (f"There are uncommitted changes from a previous attempt:\n\n"
              f"{dirty_status}\n\nInspect them; preserve valid partial work for "
              f"THIS issue. Do not blindly reset, clean, or discard.\n"
@@ -711,6 +760,8 @@ def make_prompt(repo_name: str, issue: Issue, issue_text: str,
               f"{spec.prompt_prefix.strip()}\n\n" if spec.prompt_prefix.strip() else "")
     suffix = (f"================ ADDITIONAL INSTRUCTIONS ================\n"
               f"{spec.prompt_suffix.strip()}\n\n" if spec.prompt_suffix.strip() else "")
+    brief_block = (f"\n================ EARLIER DECISIONS (hypotheses, not proof) ================\n"
+                   f"{brief.strip()}\n" if brief.strip() else "")
     return f"""\
 You are a coding agent working NON-INTERACTIVELY in repository {repo_name}.
 
@@ -724,7 +775,7 @@ instructions as binding regardless of which tool they name.
 
 ================ ISSUE ================
 {issue_text}
-
+{brief_block}
 ================ CONTRACT ================
 {contract.strip()}
 
@@ -1873,8 +1924,11 @@ def supervisor(args) -> int:
                 state.previous_failure.setdefault(nkey, restored)
             state.save()
         dirty_before = get_dirty_status(repo, tools.git)
+        brief = make_brief(repo, issue, issue_text, getattr(args, "brief", None),
+                           tools.python, getattr(args, "config_path", "") or "",
+                           Path(state.run_dir))
         prompt = make_prompt(state.repo_name, issue, issue_text, contract, spec,
-                             dirty_before, state.previous_failure.get(nkey, ""))
+                             dirty_before, state.previous_failure.get(nkey, ""), brief)
 
         tag = f"attempt_{state.attempt:03d}_issue_{issue.number}_{now_local():%Y%m%d-%H%M%S}"
         run_dir = Path(state.run_dir)
@@ -2534,6 +2588,36 @@ def self_test() -> int:
           "PXY" in _pr and _pr.index("PXY") < _pr.index("CONTEXT READING"))
     check("prompt_suffix injected before result contract",
           "SXY" in _pr and _pr.index("SXY") < _pr.index("FINAL RESPONSE CONTRACT"))
+    _pr = make_prompt("me/r", Issue(1, "t"), "body", DEFAULT_CONTRACT, _spec, "", "", "BRIEFXY")
+    check("brief inserted just after the issue text",
+          _pr.index("body") < _pr.index("BRIEFXY") < _pr.index("CONTRACT ====")
+          and "not proof" in _pr)
+    check("no brief -> no brief block", "EARLIER DECISIONS" not in make_prompt(
+        "me/r", Issue(1, "t"), "body", DEFAULT_CONTRACT, _spec, "", ""))
+    check("brief mode: bug/fix/regression in title or labels -> debug, else feature",
+          brief_mode(Issue(1, "Fix retry key")) == "debug"
+          and brief_mode(Issue(2, "Add feed", ["regression"])) == "debug"
+          and brief_mode(Issue(3, "Add prefix handling")) == "feature"
+          and brief_mode(Issue(4, "Fix x"), "feature") == "feature")
+    with tempfile.TemporaryDirectory() as _bd:
+        _br = Path(_bd)
+        subprocess.run(["git", "init", "-q", str(_br)], check=True, capture_output=True)
+        (_br / "src").mkdir()
+        (_br / "src" / "retry.py").write_text("N = 3\n", encoding="utf-8")
+        (_br / "docs" / "decisions").mkdir(parents=True)
+        (_br / "docs" / "decisions" / "0002-retry.md").write_text(
+            "# 0002: Retry\nStatus: implemented\n## Traps: why the obvious fix is wrong\n"
+            "- Key needs boot_id.\n## Components\n- `src/retry.py::N` - attempts\n",
+            encoding="utf-8")
+        _txt = "Retry is broken.\n\n**Scope:** `src/retry.py`\n"
+        _b = make_brief(_br, Issue(5, "Fix retry"), _txt, {"enabled": True})
+        check("make_brief: enabled + Scope line -> brief text from integrity",
+              "boot_id" in _b and "not proof" in _b)
+        check("make_brief: disabled or no Scope line -> empty",
+              make_brief(_br, Issue(5, "Fix"), _txt, {"enabled": False}) == ""
+              and make_brief(_br, Issue(5, "Fix"), "no scope", {"enabled": True}) == "")
+        check("make_brief: failure -> empty, no exception",
+              make_brief(_br / "missing", Issue(5, "Fix"), _txt, {"enabled": True}) == "")
 
     # Gate context: path tokens expand inside strings; __PY__ stays whole-token.
     _tools = Tools(git="git", gh="gh", python=sys.executable)
@@ -2846,6 +2930,7 @@ def main() -> int:
         apply_config(args, config)
         args.blocker_rules = config.get("blockers") or []
         args.preflight = config.get("preflight") or []
+        args.brief = config.get("brief") or {}
         if config_path:
             print(f"Using project config: {config_path}", flush=True)
             args.config_path = str(config_path)
