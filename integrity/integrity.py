@@ -963,7 +963,9 @@ def cmd_record(args) -> int:
     except (GitError, refs.RefsError, ValueError, OSError, json.JSONDecodeError) as exc:
         print(f"DECISION RECORD: MISCONFIGURED - {exc}")
         return MISCONFIGURED
-    print(text)
+    sys.stdout.flush()
+    sys.stdout.buffer.write((text + "\n").encode("utf-8"))   # UTF-8 whatever the code page
+    sys.stdout.flush()
     return rc
 
 
