@@ -6,6 +6,8 @@
 
 Each issue the runner completes leaves one **decision record**: a short Markdown file committed in the target repo, next to the code it explains.
 
+> **Records need the gate.** The record check runs only if the project's validate file lists it. For an older project, copying the config's `record` section is not enough; see [Turning on records for an existing project](REFERENCE.md#turning-on-records-for-an-existing-project).
+
 ```
 docs/decisions/0066-appointments-model.md
 ```

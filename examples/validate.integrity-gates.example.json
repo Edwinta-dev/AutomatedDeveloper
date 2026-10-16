@@ -1,0 +1,26 @@
+{
+  "//": "The three integrity commands to append to an OLDER project's validate file (its \"always\" list, after the test commands and before any adversary entry) when turning on scope, refs and decision records. The config's scope/refs/record sections only CONFIGURE these checks; without these entries none of them runs. Copied from templates/software/validate.json. See docs/REFERENCE.md#turning-on-records-for-an-existing-project.",
+  "always": [
+    {
+      "label": "scope check",
+      "skip_if_failed": true,
+      "timeout_minutes": 5,
+      "argv": ["__PY__", "__HARNESS__/../integrity/integrity.py", "gate",
+               "--config", "__PROJECT_CONFIG__", "--repo", "."]
+    },
+    {
+      "label": "dangling reference check",
+      "skip_if_failed": true,
+      "timeout_minutes": 5,
+      "argv": ["__PY__", "__HARNESS__/../integrity/integrity.py", "refs",
+               "--config", "__PROJECT_CONFIG__", "--repo", "."]
+    },
+    {
+      "label": "decision record",
+      "skip_if_failed": true,
+      "timeout_minutes": 5,
+      "argv": ["__PY__", "__HARNESS__/../integrity/integrity.py", "record",
+               "--config", "__PROJECT_CONFIG__", "--repo", "."]
+    }
+  ]
+}

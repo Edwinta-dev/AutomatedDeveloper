@@ -237,6 +237,17 @@ The gate is deliberately independent of the runner: it lives in `integrity/` at 
 - **Records** go to `<run dir>/integrity/record_issue-<N>_attempt-<K>.json`.
 - `--commit <sha>` checks the record of a past commit.
 
+### Turning on records for an existing project
+
+A project created before the records layer (or with its own validate file, such as `validate.clinic.json`) needs **two** changes. Copying the config sections alone is not enough:
+
+1. **Project config:** add the `scope`, `refs`, `record` and `brief` sections from `templates/software/issue-automation.config.json`. These only *configure* the checks, and `brief` is the one part the runner acts on directly.
+2. **Validate file:** append the three `integrity.py` commands (`scope check`, `dangling reference check`, `decision record`) to its `always` list, after the test commands and before any adversary entry. They are in `examples/validate.integrity-gates.example.json`, copied from `templates/software/validate.json`.
+
+With step 1 and not step 2 the run looks healthy but is not: briefs appear in the run dir (`brief_issue_N.md`), yet no check asks for a record, nothing is written to `docs/decisions/`, the scope check never runs, and every commit says `Closes #N`. This happened in the IE4727 project on 2026-10-16 (#168-#183 were committed without records).
+
+**Check it:** `python v2.py check <Name>` prints the gate order. It should end with `scope check (only if all passed) -> dangling reference check (only if all passed) -> decision record (only if all passed)`. If those three are missing, step 2 was skipped. The new gates apply from the next attempt; earlier commits stay without records unless someone writes them by hand (run `integrity/integrity.py record --issue N` on the staged change to append the facts block).
+
 ## Decision record brief
 
 `integrity/integrity.py brief` prints slices of earlier decision records for the components a task touches, as hypotheses to check (see [DECISION_RECORDS.md](DECISION_RECORDS.md#record-slices-for-agents-integrity-brief)).
