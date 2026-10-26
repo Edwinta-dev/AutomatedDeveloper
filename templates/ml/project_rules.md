@@ -24,6 +24,15 @@ Also save validation predictions to `results/val_predictions.csv`, so the gate c
 - A score above the plausible ceiling, or a bigger one-step jump than allowed, is treated as **leakage** and rejected. Find the leak; do not tune around the gate.
 - If the idea does not help, finish with `STATUS: INCOMPLETE` and put the number in `NOTES`. A clean negative result is useful; a result tuned until it passes is not.
 
+## Long compute runs happen outside the issue
+
+An issue runs inside a time-limited agent session. A retry starts a new session, so it may restart training from scratch. So:
+
+- **Never start training that takes longer than about 15 minutes** (multi-run sweeps, multi-seed runs, full-dataset GPU training). The owner runs those directly with the repo's scripts before the issue starts.
+- When an issue depends on such a run, read its finished run folder: metrics, checkpoints and summaries. Evaluate, tabulate, plot and write up from that folder.
+- If the run folder the issue names is missing or unfinished, do not launch it yourself. Report `STATUS: BLOCKED` and put in NEEDS the exact command the owner should run.
+- Short runs are fine inside an issue: smoke tests, a single short epoch, a VRAM probe, evaluating an existing checkpoint.
+
 ## Project-specific notes
 
 <!-- Optional: dataset quirks, allowed libraries, compute limits, the Kaggle competition link. -->

@@ -151,7 +151,8 @@ def run_capture(args: Sequence[str], *, cwd: Optional[Path] = None,
 
 
 def git(repo: Path, git_exe: str, *args: str, check: bool = True) -> str:
-    return run_capture([git_exe, *args], cwd=repo, check=check).stdout
+    # run_capture merges stderr; without this, CRLF warnings land in file lists.
+    return run_capture([git_exe, "-c", "core.safecrlf=false", *args], cwd=repo, check=check).stdout
 
 
 def gh(repo: Path, gh_exe: str, *args: str, check: bool = True) -> str:

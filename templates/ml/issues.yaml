@@ -3,6 +3,9 @@
 # Issue 1 builds the frozen protocol. It runs unattended like the rest (the gate allows
 # creating protected files, and locks the test data on the first pass), but review its
 # commit before merging: everything after it is judged by that eval.
+# Long compute (sweeps, multi-seed runs, full GPU training) is NOT an issue: run it directly
+# with the repo's scripts, then write the issue as "read runs/<name> and report". An agent
+# session that trains for hours hits its time limit, and its retry restarts from scratch.
 # scope: path, glob, or path::Qualname; the issue may only change these; imports, tests and
 # new helpers in scoped files are allowed. Checked by the scope gate (config "scope" section).
 
